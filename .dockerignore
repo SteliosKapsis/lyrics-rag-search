@@ -1,0 +1,42 @@
+# Secrets — never bake into image
+.env
+
+# Raw/failed data — large, not needed at runtime
+data/raw/
+data/failed/
+
+# Processed indexes — mounted at runtime via docker-compose bind mount,
+# not baked into the image (keeps build context small + avoids stale data)
+data/processed/
+
+# Collection scripts — not needed at runtime
+collection/
+
+# Notebooks — not needed at runtime
+notebooks/
+
+# Input data files
+charts.csv
+charts_test.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.md
+prompts/
+documentation/
+Documentation/

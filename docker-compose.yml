@@ -1,0 +1,99 @@
+services:
+  # ── RabbitMQ Broker ────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI (guest/guest at http://localhost:15672)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ── RAG Worker ─────────────────────────────────────────────
+  # Consumes queries from the 'rag.queries' queue, runs the
+  # full pipeline, and publishes results back via RPC reply queue.
+  worker:
+    build: .
+    entrypoint: ["python", "worker/worker.py"]
+    env_file:
+      - .env
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    volumes:
+      - ./data/processed:/app/data/processed:ro
+      - hf-cache:/app/.cache/huggingface
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # ── Streamlit App ──────────────────────────────────────────
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    volumes:
+      - ./data/processed:/app/data/processed:ro
+      - hf-cache:/app/.cache/huggingface
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      worker:
+        condition: service_started
+
+  # ── Ollama (optional) ──────────────────────────────────────
+  # Runs only when you explicitly enable the "ollama" profile.
+  # After starting, pull the model once:
+  #   docker compose exec ollama ollama pull llama3
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    profiles:
+      - ollama   # only starts with: docker compose --profile ollama up
+
+  # ── Chunker (one-shot) ─────────────────────────────────────
+  # Runs pipeline/chunking.py to (re)build data/processed/chunks.jsonl
+  # from data/raw/cleaned_lyrics.json. One-shot — does not auto-start.
+  #   docker compose run --rm chunker
+  #   docker compose run --rm chunker --max-chunk-size 600 --min-chunk-size 100
+  chunker:
+    build: .
+    entrypoint: ["python", "pipeline/chunking.py"]
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data   # read-write: needs to write chunks.jsonl
+    profiles:
+      - pipeline
+
+  # ── Indexer (one-shot) ─────────────────────────────────────
+  # Runs pipeline/embedding.py to (re)build FAISS + BM25 + metadata
+  # from data/processed/chunks.jsonl. One-shot — does not auto-start.
+  #   docker compose run --rm indexer                                       # MiniLM (default)
+  #   docker compose run --rm indexer --model BAAI/bge-small-en-v1.5        # BGE
+  #   docker compose run --rm indexer --openai                              # OpenAI (needs OPENAI_API_KEY in .env)
+  #   docker compose run --rm indexer --skip-contextual                     # ablation: no metadata header
+  indexer:
+    build: .
+    entrypoint: ["python", "pipeline/embedding.py"]
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data   # read-write: needs to write FAISS/BM25/metadata
+      - hf-cache:/app/.cache/huggingface
+    profiles:
+      - pipeline
+
+volumes:
+  hf-cache:
+  ollama-models:

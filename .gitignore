@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/
+*.ipynb_checkpoints/
+New dolder/
+
+# Billboard chart input data — not redistributed in the repo.
+# Source it yourself (e.g. from Kaggle's Billboard Hot 100 dataset)
+# and place it at the project root before running collection/ingest_lyrics.py.
+charts.csv
+charts_test.csv
+
+# Claude Code per-user state (permission allowlist, etc.)
+.claude/
