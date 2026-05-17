@@ -17,3 +17,6 @@ charts_test.csv
 
 # DeepEval per-user telemetry (anonymous UUID dropped on first use)
 .deepeval/
+
+# Phase prompts used during development — not part of the deliverable
+prompts/
