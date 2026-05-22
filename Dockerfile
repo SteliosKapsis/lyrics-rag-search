@@ -17,7 +17,8 @@ WORKDIR /app
 # A separate requirements-docker.txt avoids pulling lyricsgenius,
 # langdetect, matplotlib, seaborn, etc. into the image.
 COPY requirements-docker.txt .
-RUN pip install --no-cache-dir -r requirements-docker.txt
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements-docker.txt
 
 # ============================================================
 # Final stage — copy only what the app needs
