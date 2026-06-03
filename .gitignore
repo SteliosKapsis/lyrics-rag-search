@@ -20,3 +20,6 @@ charts_test.csv
 
 # Phase prompts used during development — not part of the deliverable
 prompts/
+
+# Thesis manuscript — private until defense
+thesis/

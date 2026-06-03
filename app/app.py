@@ -194,6 +194,10 @@ def main():
         backend_key = "anthropic" if "Anthropic" in llm_backend else "ollama"
         llm_model = None  # use defaults per backend
 
+    # Stable session ID — groups all traces from this browser session in Langfuse
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+
     # --- Load pipeline ---
     try:
         pipeline = load_pipeline(embedding_model, backend_key, llm_model, reranker_model)
@@ -234,6 +238,7 @@ def main():
                     use_hyde=use_hyde,
                     use_hybrid=use_hybrid,
                     use_reranker=use_reranker,
+                    session_id=st.session_state.session_id,
                 )
             except Exception as e:
                 st.error(f"Worker queue error: {e}")
@@ -257,6 +262,7 @@ def main():
                 use_hyde=use_hyde,
                 use_hybrid=use_hybrid,
                 use_reranker=use_reranker,
+                session_id=st.session_state.session_id,
             )
             with st.spinner("Retrieving..."):
                 retrieval_data = next(stream)

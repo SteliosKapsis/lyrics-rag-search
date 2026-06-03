@@ -42,6 +42,7 @@ import faiss
 import numpy as np
 import requests
 from dotenv import load_dotenv
+from langfuse import get_client, observe, propagate_attributes
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
@@ -268,6 +269,7 @@ class QueryPipeline:
             log.warning("HyDE hypothesis generation failed: %s. Falling back to raw query.", e)
             return query
 
+    @observe(as_type="generation", name="hyde-hypothesis")
     def _call_anthropic(self, system: str, user_message: str) -> str:
         """Call Claude via the Anthropic API (plain text, used for HyDE)."""
         if not self.anthropic_client:
@@ -279,8 +281,13 @@ class QueryPipeline:
             system=system,
             messages=[{"role": "user", "content": user_message}],
         )
+        get_client().update_current_generation(
+            model=self.llm_model,
+            usage_details={"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens},
+        )
         return response.content[0].text
 
+    @observe(as_type="generation", name="anthropic-structured")
     def _call_anthropic_structured(self, system: str, user_message: str) -> LLMResponse:
         """
         Call Claude with tool_use to get structured JSON output.
@@ -305,21 +312,29 @@ class QueryPipeline:
         )
 
         # Extract tool call arguments
-        for block in response.content:
-            if block.type == "tool_use":
-                return LLMResponse.model_validate(block.input)
-
-        # Fallback if no tool_use block found
-        return LLMResponse(
+        result = LLMResponse(
             matches=[], confidence="low",
             summary="Failed to parse structured response from LLM.",
         )
+        for block in response.content:
+            if block.type == "tool_use":
+                result = LLMResponse.model_validate(block.input)
+                break
+
+        get_client().update_current_generation(
+            model=self.llm_model,
+            input=user_message,
+            output=result.model_dump(),
+            usage_details={"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens},
+        )
+        return result
 
     def _get_ollama_url(self) -> str:
         """Get the Ollama API base URL from env or default."""
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         return f"{host}/api/chat"
 
+    @observe(as_type="generation", name="hyde-hypothesis-ollama")
     def _call_ollama(self, system: str, user_message: str) -> str:
         """
         Call a local LLM via the Ollama REST API (plain text, used for HyDE).
@@ -341,6 +356,7 @@ class QueryPipeline:
             "stream": False,
         }
 
+        get_client().update_current_generation(model=self.llm_model)
         try:
             resp = requests.post(url, json=payload, timeout=120)
             resp.raise_for_status()
@@ -357,6 +373,7 @@ class QueryPipeline:
         except Exception as e:
             return f"[Error: Ollama request failed: {e}]"
 
+    @observe(as_type="generation", name="ollama-structured")
     def _call_ollama_structured(self, system: str, user_message: str) -> LLMResponse:
         """
         Call Ollama with the format parameter to get structured JSON output.
@@ -364,6 +381,7 @@ class QueryPipeline:
         Uses the format parameter with the Pydantic model's JSON schema,
         which forces Ollama to return conforming JSON.
         """
+        get_client().update_current_generation(model=self.llm_model, input=user_message)
         url = self._get_ollama_url()
         payload = {
             "model": self.llm_model,
@@ -379,7 +397,9 @@ class QueryPipeline:
             resp = requests.post(url, json=payload, timeout=120)
             resp.raise_for_status()
             content = resp.json()["message"]["content"]
-            return LLMResponse.model_validate_json(content)
+            result = LLMResponse.model_validate_json(content)
+            get_client().update_current_generation(output=result.model_dump())
+            return result
         except requests.ConnectionError:
             return LLMResponse(
                 matches=[], confidence="low",
@@ -554,6 +574,7 @@ class QueryPipeline:
         else:
             return self._call_ollama_structured(SYSTEM_PROMPT, user_message)
 
+    @observe(name="retrieval")
     def _retrieve_step(
         self,
         query: str,
@@ -570,6 +591,10 @@ class QueryPipeline:
         """
         # Fetch more than top_k if reranking, so the reranker has more to work with
         fetch_k = top_k * fetch_k_multiplier if use_reranker else top_k
+        get_client().update_current_span(
+            input={"query": query, "retrieval_query": retrieval_query},
+            metadata={"use_hybrid": use_hybrid, "use_reranker": use_reranker, "top_k": top_k, "fetch_k": fetch_k},
+        )
 
         if use_hybrid and self.bm25 is not None:
             log.info("Hybrid retrieval (FAISS + BM25 with RRF)...")
@@ -591,6 +616,7 @@ class QueryPipeline:
 
         return raw_results
 
+    @observe(name="rag-query")
     def query(
         self,
         query: str,
@@ -600,6 +626,7 @@ class QueryPipeline:
         use_reranker: bool = True,
         rrf_k: int = 60,
         fetch_k_multiplier: int = 5,
+        session_id: str | None = None,
     ) -> dict:
         """
         Full RAG pipeline: [HyDE] → retrieve [hybrid] → [rerank] → group → synthesize.
@@ -612,6 +639,7 @@ class QueryPipeline:
             use_reranker: If True, re-rank retrieved chunks with cross-encoder.
             rrf_k: RRF fusion constant for hybrid retrieval (default 60).
             fetch_k_multiplier: How many more candidates to fetch before re-ranking (default 3).
+            session_id: Optional session identifier forwarded to Langfuse for trace correlation.
 
         Returns:
             {
@@ -621,42 +649,62 @@ class QueryPipeline:
                 "hyde_hypothesis": str | None,
             }
         """
+        lf = get_client()
         log.info(
             "Query: '%s' (top_k=%d, hyde=%s, hybrid=%s, reranker=%s, backend=%s)",
             query, top_k, use_hyde, use_hybrid, use_reranker, self.llm_backend,
         )
 
-        # Step 1: Optionally generate HyDE hypothesis
-        hyde_hypothesis = None
-        retrieval_query = query
+        _pa_kwargs: dict = {"metadata": {
+            "embedding_model": self.embedding_model_name,
+            "llm_model": self.llm_model,
+            "llm_backend": self.llm_backend,
+            "use_hyde": use_hyde,
+            "use_hybrid": use_hybrid,
+            "use_reranker": use_reranker,
+            "top_k": top_k,
+        }}
+        if session_id:
+            _pa_kwargs["session_id"] = session_id
 
-        if use_hyde:
-            log.info("Generating HyDE hypothesis...")
-            hyde_hypothesis = self._generate_hyde_hypothesis(query)
-            retrieval_query = hyde_hypothesis
-            log.info("HyDE hypothesis: %s", hyde_hypothesis[:100] + "...")
+        with propagate_attributes(**_pa_kwargs):
+            lf.set_current_trace_io(input=query)
 
-        # Step 2 + 3: Retrieve and optionally re-rank
-        raw_results = self._retrieve_step(
-            query, retrieval_query, top_k, use_hybrid, use_reranker,
-            rrf_k=rrf_k, fetch_k_multiplier=fetch_k_multiplier,
-        )
+            # Step 1: Optionally generate HyDE hypothesis
+            hyde_hypothesis = None
+            retrieval_query = query
 
-        # Step 4: Group by song
-        grouped = self.group_by_song(raw_results)
-        log.info("Grouped into %d unique song(s)", len(grouped))
+            if use_hyde:
+                log.info("Generating HyDE hypothesis...")
+                hyde_hypothesis = self._generate_hyde_hypothesis(query)
+                retrieval_query = hyde_hypothesis
+                log.info("HyDE hypothesis: %s", hyde_hypothesis[:100] + "...")
 
-        # Step 5: Synthesize with LLM (structured output)
-        llm_response = self.synthesize(query, grouped)
-        log.info("LLM confidence: %s, matches: %d", llm_response.confidence, len(llm_response.matches))
+            # Step 2 + 3: Retrieve and optionally re-rank
+            raw_results = self._retrieve_step(
+                query, retrieval_query, top_k, use_hybrid, use_reranker,
+                rrf_k=rrf_k, fetch_k_multiplier=fetch_k_multiplier,
+            )
 
-        return {
-            "query": query,
-            "retrieval_results": grouped,
-            "llm_response": llm_response,
-            "hyde_hypothesis": hyde_hypothesis,
-        }
+            # Step 4: Group by song
+            grouped = self.group_by_song(raw_results)
+            log.info("Grouped into %d unique song(s)", len(grouped))
 
+            # Step 5: Synthesize with LLM (structured output)
+            llm_response = self.synthesize(query, grouped)
+            log.info("LLM confidence: %s, matches: %d", llm_response.confidence, len(llm_response.matches))
+
+            lf.set_current_trace_io(
+                output={"confidence": llm_response.confidence, "num_matches": len(llm_response.matches)},
+            )
+            return {
+                "query": query,
+                "retrieval_results": grouped,
+                "llm_response": llm_response,
+                "hyde_hypothesis": hyde_hypothesis,
+            }
+
+    @observe(name="rag-query-stream")
     def query_stream(
         self,
         query: str,
@@ -666,6 +714,7 @@ class QueryPipeline:
         use_reranker: bool = True,
         rrf_k: int = 60,
         fetch_k_multiplier: int = 5,
+        session_id: str | None = None,
     ) -> Generator[dict | str, None, None]:
         """
         Streaming RAG pipeline. Yields:
@@ -679,48 +728,65 @@ class QueryPipeline:
             for token in stream:  # str tokens from LLM
                 print(token, end="")
         """
+        lf = get_client()
         log.info(
             "Stream query: '%s' (top_k=%d, hyde=%s, hybrid=%s, reranker=%s, backend=%s)",
             query, top_k, use_hyde, use_hybrid, use_reranker, self.llm_backend,
         )
 
-        # Step 1: Optionally generate HyDE hypothesis
-        hyde_hypothesis = None
-        retrieval_query = query
+        _pa_kwargs: dict = {"metadata": {
+            "embedding_model": self.embedding_model_name,
+            "llm_model": self.llm_model,
+            "llm_backend": self.llm_backend,
+            "use_hyde": use_hyde,
+            "use_hybrid": use_hybrid,
+            "use_reranker": use_reranker,
+            "top_k": top_k,
+        }}
+        if session_id:
+            _pa_kwargs["session_id"] = session_id
 
-        if use_hyde:
-            log.info("Generating HyDE hypothesis...")
-            hyde_hypothesis = self._generate_hyde_hypothesis(query)
-            retrieval_query = hyde_hypothesis
+        with propagate_attributes(**_pa_kwargs):
+            lf.set_current_trace_io(input=query)
 
-        # Step 2 + 3: Retrieve and optionally re-rank
-        raw_results = self._retrieve_step(
-            query, retrieval_query, top_k, use_hybrid, use_reranker,
-            rrf_k=rrf_k, fetch_k_multiplier=fetch_k_multiplier,
-        )
+            # Step 1: Optionally generate HyDE hypothesis
+            hyde_hypothesis = None
+            retrieval_query = query
 
-        # Step 4: Group by song
-        grouped = self.group_by_song(raw_results)
+            if use_hyde:
+                log.info("Generating HyDE hypothesis...")
+                hyde_hypothesis = self._generate_hyde_hypothesis(query)
+                retrieval_query = hyde_hypothesis
 
-        # Yield retrieval results immediately so the UI can display them
-        yield {
-            "retrieval_results": grouped,
-            "hyde_hypothesis": hyde_hypothesis,
-        }
+            # Step 2 + 3: Retrieve and optionally re-rank
+            raw_results = self._retrieve_step(
+                query, retrieval_query, top_k, use_hybrid, use_reranker,
+                rrf_k=rrf_k, fetch_k_multiplier=fetch_k_multiplier,
+            )
 
-        # Step 5: Stream LLM synthesis
-        context = build_context(grouped)
-        user_message = (
-            f"User query: \"{query}\"\n\n"
-            f"Retrieved lyrics from database:\n\n{context}\n\n"
-            f"Based on these retrieved excerpts, identify the song(s) the user is looking for."
-        )
+            # Step 4: Group by song
+            grouped = self.group_by_song(raw_results)
 
-        if self.llm_backend == "anthropic":
-            yield from self._stream_anthropic(SYSTEM_PROMPT, user_message)
-        else:
-            yield from self._stream_ollama(SYSTEM_PROMPT, user_message)
+            # Yield retrieval results immediately so the UI can display them
+            yield {
+                "retrieval_results": grouped,
+                "hyde_hypothesis": hyde_hypothesis,
+            }
 
+            # Step 5: Stream LLM synthesis
+            context = build_context(grouped)
+            user_message = (
+                f"User query: \"{query}\"\n\n"
+                f"Retrieved lyrics from database:\n\n{context}\n\n"
+                f"Based on these retrieved excerpts, identify the song(s) the user is looking for."
+            )
+
+            if self.llm_backend == "anthropic":
+                yield from self._stream_anthropic(SYSTEM_PROMPT, user_message)
+            else:
+                yield from self._stream_ollama(SYSTEM_PROMPT, user_message)
+
+    @observe(as_type="generation", name="anthropic-stream")
     def _stream_anthropic(self, system: str, user_message: str) -> Generator[str, None, None]:
         """
         Stream tokens from Claude via the Anthropic API using tool_use.
@@ -728,6 +794,7 @@ class QueryPipeline:
         Streams the JSON being built as tool input. The caller collects all
         tokens and parses the final JSON into LLMResponse after stream completes.
         """
+        get_client().update_current_generation(model=self.llm_model)
         if not self.anthropic_client:
             yield "[Error: ANTHROPIC_API_KEY not configured]"
             return
@@ -757,6 +824,7 @@ class QueryPipeline:
         except anthropic.APITimeoutError:
             yield "[Error: Request timed out. Please retry.]"
 
+    @observe(as_type="generation", name="ollama-stream")
     def _stream_ollama(self, system: str, user_message: str) -> Generator[str, None, None]:
         """
         Stream tokens from Ollama REST API with structured format.
@@ -764,6 +832,7 @@ class QueryPipeline:
         Streams the JSON being built token by token. The caller collects all
         tokens and parses the final JSON into LLMResponse after stream completes.
         """
+        get_client().update_current_generation(model=self.llm_model)
         url = self._get_ollama_url()
         payload = {
             "model": self.llm_model,
@@ -862,6 +931,10 @@ def main():
         use_reranker=args.use_reranker,
     )
     print_results(result)
+
+    # Flush Langfuse background queue before the script exits.
+    # Without this, async traces are lost when the process terminates.
+    get_client().flush()
 
 
 if __name__ == "__main__":

@@ -60,11 +60,12 @@ def on_request(ch, method, props, body):
         query_text = req.pop("query")
         embedding_model = req.pop("embedding_model", "text-embedding-3-small")
         reranker_model = req.pop("reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+        session_id = req.pop("session_id", props.correlation_id)
 
         print(f"[Worker] Query: '{query_text[:60]}...' model={embedding_model}")
 
         pipeline = get_pipeline(embedding_model, reranker_model)
-        result = pipeline.query(query_text, **req)
+        result = pipeline.query(query_text, session_id=session_id, **req)
 
         # Serialize: LLMResponse is a Pydantic model, convert to plain dict
         payload = json.dumps({
