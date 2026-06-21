@@ -43,7 +43,7 @@ def get_pipeline(embedding_model: str, reranker_model: str) -> QueryPipeline:
         suffix = EMBEDDING_MODELS.get(embedding_model, "")
         print(f"[Worker] Loading pipeline: {embedding_model} / {reranker_model}")
         _pipeline_cache[key] = QueryPipeline(
-            index_path=str(DATA_DIR / f"faiss{suffix}.index"),
+            index_path=str(DATA_DIR / f"faiss_lc{suffix}"),
             metadata_path=str(DATA_DIR / f"metadata{suffix}.json"),
             bm25_path=str(DATA_DIR / f"bm25{suffix}.pkl"),
             embedding_model=embedding_model,

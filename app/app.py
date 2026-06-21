@@ -22,13 +22,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from pipeline.query import LLMResponse, QueryPipeline  # noqa: E402
 
 
-# Map embedding model names to their index file suffixes
+# Map embedding model names to their index folder suffixes.
+# LangChain FAISS saves to a folder (faiss_lc{suffix}/) instead of a single
+# .index file, so detection uses .is_dir() and paths are folder strings.
 EMBEDDING_MODELS = {
-    "all-MiniLM-L6-v2": "",                        # default files: faiss.index, metadata.json, bm25.pkl
-    "BAAI/bge-small-en-v1.5": "_bge",              # suffixed files: faiss_bge.index, metadata_bge.json, bm25_bge.pkl
-    "all-MiniLM-L6-v2 (no context)": "_noctx",     # non-contextual: faiss_noctx.index (built with --skip-contextual)
+    "all-MiniLM-L6-v2": "",                        # default folder: faiss_lc/
+    "BAAI/bge-small-en-v1.5": "_bge",              # faiss_lc_bge/
+    "all-MiniLM-L6-v2 (no context)": "_noctx",     # faiss_lc_noctx/
     "BAAI/bge-small-en-v1.5 (no context)": "_bge_noctx",
-    "text-embedding-3-small": "_openai",           # OpenAI cloud: faiss_openai.index (built with --openai)
+    "text-embedding-3-small": "_openai",           # faiss_lc_openai/
 }
 
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
@@ -47,7 +49,7 @@ def load_pipeline(
     """Load the query pipeline once and cache it across reruns."""
     suffix = EMBEDDING_MODELS.get(embedding_model, "")
     return QueryPipeline(
-        index_path=str(DATA_DIR / f"faiss{suffix}.index"),
+        index_path=str(DATA_DIR / f"faiss_lc{suffix}"),
         metadata_path=str(DATA_DIR / f"metadata{suffix}.json"),
         bm25_path=str(DATA_DIR / f"bm25{suffix}.pkl"),
         embedding_model=embedding_model,
@@ -124,7 +126,7 @@ def main():
         available_models = {
             name: suffix
             for name, suffix in EMBEDDING_MODELS.items()
-            if (DATA_DIR / f"faiss{suffix}.index").exists()
+            if (DATA_DIR / f"faiss_lc{suffix}").is_dir()
         }
 
         if len(available_models) > 1:

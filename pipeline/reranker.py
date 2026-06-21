@@ -1,87 +1,53 @@
 """
-Cross-encoder reranker for the RAG pipeline.
-Re-scores retrieved chunks using a cross-encoder model that considers
-the query and chunk text jointly, producing more accurate relevance scores
-than the bi-encoder (FAISS) retrieval.
+Cross-encoder reranker — LangChain version.
+
+Replaces the custom Reranker class with LangChain's CrossEncoderReranker,
+which wraps HuggingFaceCrossEncoder and implements BaseDocumentCompressor.
+This means it can plug directly into a ContextualCompressionRetriever chain,
+or be called standalone via compress_documents().
 
 Usage as a module:
-    from pipeline.reranker import Reranker
+    from pipeline.reranker import build_reranker
+    from langchain_core.documents import Document
 
-    reranker = Reranker()
-    reranked = reranker.rerank(query="sad song about rain", chunks=retrieved_chunks, top_k=5)
+    reranker = build_reranker("cross-encoder/ms-marco-MiniLM-L-6-v2", top_n=5)
+    docs = [Document(page_content="...", metadata={...}), ...]
+    reranked = reranker.compress_documents(docs, query="sad song about rain")
+    # each doc gains doc.metadata["relevance_score"]
 
-The cross-encoder model scores each (query, chunk) pair directly, which is
-more accurate than bi-encoder cosine similarity but too slow for first-stage
-retrieval over the full index. That's why we use it as a second stage:
-    FAISS (fast, approximate) → Cross-encoder (slow, precise)
+The cross-encoder scores each (query, doc) pair jointly — more accurate than
+bi-encoder cosine similarity but too slow for first-stage retrieval over the
+full index.  Use it as a second stage after FAISS narrows the candidates.
 """
 
 import logging
 
-from sentence_transformers import CrossEncoder
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
 log = logging.getLogger(__name__)
-
-# Suppress noisy logs
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 
-class Reranker:
+def build_reranker(
+    model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    top_n: int = 5,
+):
     """
-    Cross-encoder reranker that re-scores retrieved chunks.
+    Return a configured LangChain CrossEncoderReranker.
 
-    Uses cross-encoder/ms-marco-MiniLM-L-6-v2 by default — a lightweight
-    cross-encoder trained on MS MARCO passage ranking data. It's small
-    (~80MB) and fast enough for re-ranking top-k results in real time.
+    The returned object is a BaseDocumentCompressor — call
+    compress_documents(docs, query) to rerank a list of Documents.
+    Scores are attached to doc.metadata["relevance_score"].
+
+    Args:
+        model_name: HuggingFace cross-encoder model.  Lightweight options:
+                    cross-encoder/ms-marco-MiniLM-L-6-v2  (~80 MB, default)
+                    cross-encoder/ms-marco-MiniLM-L-12-v2 (more accurate, slower)
+                    BAAI/bge-reranker-base                 (alternative backbone)
+        top_n:      How many top documents to keep after reranking.
     """
+    from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+    from langchain.retrievers.document_compressors import CrossEncoderReranker
 
-    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
-        log.info("Loading cross-encoder model: %s", model_name)
-        self.model = CrossEncoder(model_name)
-        self.model_name = model_name
-
-    def rerank(
-        self,
-        query: str,
-        chunks: list[dict],
-        top_k: int | None = None,
-    ) -> list[dict]:
-        """
-        Re-score and re-sort retrieved chunks using the cross-encoder.
-
-        Args:
-            query: The user's natural language query.
-            chunks: List of chunk dicts from FAISS retrieval. Each must have
-                    a "text" field. Other fields are passed through unchanged.
-            top_k: If set, return only the top-k re-ranked results.
-                   If None, return all chunks re-sorted.
-
-        Returns:
-            The same chunk dicts with an added "cross_encoder_score" field,
-            sorted by cross-encoder score descending.
-        """
-        if not chunks:
-            return chunks
-
-        # Build (query, text) pairs for the cross-encoder
-        pairs = [(query, chunk["text"]) for chunk in chunks]
-
-        # Score all pairs
-        scores = self.model.predict(pairs)
-
-        # Attach scores and sort
-        for chunk, score in zip(chunks, scores):
-            chunk["cross_encoder_score"] = float(score)
-
-        ranked = sorted(chunks, key=lambda c: c["cross_encoder_score"], reverse=True)
-
-        if top_k is not None:
-            ranked = ranked[:top_k]
-
-        return ranked
+    log.info("Loading cross-encoder model: %s", model_name)
+    cross_encoder = HuggingFaceCrossEncoder(model_name=model_name)
+    return CrossEncoderReranker(model=cross_encoder, top_n=top_n)

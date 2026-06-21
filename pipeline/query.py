@@ -1,30 +1,29 @@
 """
-RAG query pipeline for lyrics search.
-Supports standard, hybrid (FAISS + BM25), and HyDE retrieval, optional
-cross-encoder re-ranking, streaming responses, and two LLM backends
-(Anthropic Claude / Ollama Llama 3).
+RAG query pipeline — LangChain version.
 
-Usage (from project root):
-    .venv/Scripts/python pipeline/query.py "that sad song about leaving home"
+Replaces the hand-rolled Anthropic / FAISS / BM25 code with:
 
-    # With HyDE retrieval:
-    .venv/Scripts/python pipeline/query.py "upbeat dance song" --use-hyde
+  Embeddings   langchain_huggingface.HuggingFaceEmbeddings
+               langchain_openai.OpenAIEmbeddings
+  Vector store langchain_community.vectorstores.FAISS
+  LLMs         langchain_anthropic.ChatAnthropic
+               langchain_community.chat_models.ChatOllama
+  Structured   llm.with_structured_output(LLMResponse)   (non-streaming)
+  Prompts      langchain_core.prompts.ChatPromptTemplate
+  Reranker     CrossEncoderReranker.compress_documents()
+  Tracing      langfuse.callback.CallbackHandler          (auto-traces all LangChain calls)
 
-    # With hybrid retrieval disabled (FAISS only):
-    .venv/Scripts/python pipeline/query.py "never gonna give you up" --no-hybrid
+BM25 hybrid retrieval still uses the pickled BM25Okapi index + metadata.json
+(LangChain's BM25Retriever is in-memory only; keeping the pickle avoids
+rebuilding 175 k documents on every worker startup).
 
-    # With cross-encoder re-ranking:
-    .venv/Scripts/python pipeline/query.py "love song" --use-reranker
+The public interface of QueryPipeline is unchanged so app.py / worker.py
+require only a path-format update (faiss_lc/ folders instead of .index files).
 
-    # Using local Ollama/Llama 3:
-    .venv/Scripts/python pipeline/query.py "rock anthem" --llm-backend ollama
-
-Can also be imported as a module:
+Usage:
     from pipeline.query import QueryPipeline
     pipeline = QueryPipeline()
-    result = pipeline.query("sad song about letting someone go", use_hyde=True)
-
-Inputs:  data/processed/faiss.index + data/processed/metadata.json + data/processed/bm25.pkl
+    result = pipeline.query("sad song about letting someone go")
 """
 
 import argparse
@@ -37,54 +36,44 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Generator, Literal
 
-import anthropic
-import faiss
 import numpy as np
 import requests
 from dotenv import load_dotenv
-from langfuse import get_client, observe, propagate_attributes
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
 
-# Load .env from project root
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# Suppress noisy logs from libraries
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
+
+# ---------------------------------------------------------------------------
+# Pydantic response schemas  (unchanged from custom branch)
+# ---------------------------------------------------------------------------
+
 class SongMatch(BaseModel):
-    """A single song match from the LLM synthesis."""
     title: str
     artist: str
     album: str | None = None
     release_date: str | None = None
-    relevant_lyric: str       # most relevant excerpt
-    explanation: str           # why this matches the query
+    relevant_lyric: str
+    explanation: str
 
 
 class LLMResponse(BaseModel):
-    """Structured response from the LLM synthesis step."""
-    matches: list[SongMatch]  # ranked by relevance
-    confidence: Literal["high", "medium", "low"]  # constrained to 3 values
-    summary: str              # 1-2 sentence answer to the query
+    matches: list[SongMatch]
+    confidence: Literal["high", "medium", "low"]
+    summary: str
 
 
-# Tool definition for Anthropic structured output via tool_use
-RESPONSE_TOOL = {
-    "name": "format_response",
-    "description": "Format the lyrics search results into a structured response.",
-    "input_schema": LLMResponse.model_json_schema(),
-}
-
+# ---------------------------------------------------------------------------
+# Prompts  (unchanged)
+# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
 You are a lyrics search assistant. The user will describe a song they're looking for, \
@@ -96,8 +85,7 @@ Your task:
 3. For each match, provide: song title, artist, album, and release date.
 4. If multiple songs could match, rank them by relevance and explain why.
 5. If the similarity scores are low (below 0.3) or the excerpts don't clearly match \
-the user's description, explicitly acknowledge the uncertainty — say something like \
-"I'm not fully confident in this match" rather than guessing.
+the user's description, explicitly acknowledge the uncertainty.
 
 Keep your response concise and well-structured. Do not fabricate lyrics or metadata \
 that aren't in the provided excerpts.\
@@ -111,12 +99,23 @@ and the feelings it evokes. Do not write song lyrics or verse lines — write in
 prose, like a music critic describing the song's content and atmosphere.\
 """
 
+# JSON schema string injected into the streaming prompt so the LLM outputs
+# parseable JSON without requiring tool_use (which can't stream partial tokens).
+_RESPONSE_SCHEMA_STR = json.dumps(LLMResponse.model_json_schema(), indent=2)
+
+STREAMING_SYSTEM_PROMPT = (
+    SYSTEM_PROMPT
+    + "\n\nYou MUST respond with a single valid JSON object — no markdown, no prose "
+    "outside the JSON — that strictly matches this schema:\n"
+    + _RESPONSE_SCHEMA_STR
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def build_context(grouped_results: list[dict]) -> str:
-    """
-    Build the context string to send to the LLM.
-    Includes both FAISS and cross-encoder scores when available.
-    """
     parts = []
     for i, song in enumerate(grouped_results, 1):
         parts.append(f"--- Match {i} (best similarity: {song['best_score']:.3f}) ---")
@@ -133,20 +132,24 @@ def build_context(grouped_results: list[dict]) -> str:
             parts.append(f"  {chunk['text']}")
             parts.append("")
         parts.append("")
-
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# QueryPipeline
+# ---------------------------------------------------------------------------
+
 class QueryPipeline:
     """
-    End-to-end RAG query pipeline with support for:
-    - Standard, hybrid (FAISS + BM25), and HyDE retrieval
-    - Optional cross-encoder re-ranking
-    - Streaming LLM responses
-    - Anthropic (Claude) and Ollama (Llama 3) LLM backends
+    End-to-end RAG query pipeline backed by LangChain components.
 
-    Loads the FAISS index, BM25 index, metadata, and embedding model once,
-    then handles multiple queries efficiently.
+    Dense retrieval  — LangChain FAISS vectorstore (loaded from faiss_lc/ folder)
+    Sparse retrieval — BM25Okapi (loaded from bm25.pkl, same format as custom branch)
+    Hybrid           — manual Reciprocal Rank Fusion (same algorithm as custom branch)
+    Reranker         — LangChain CrossEncoderReranker
+    LLM synthesis    — ChatAnthropic / ChatOllama with structured output (non-streaming)
+                       plain .stream() for streaming path
+    Tracing          — LangfuseCallbackHandler (injected per query via config=)
     """
 
     def __init__(
@@ -160,13 +163,16 @@ class QueryPipeline:
         reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
     ):
         project_root = Path(__file__).resolve().parent.parent
-        self.index_path = index_path or str(project_root / "data" / "processed" / "faiss.index")
-        self.metadata_path = metadata_path or str(project_root / "data" / "processed" / "metadata.json")
-        self.bm25_path = bm25_path or str(project_root / "data" / "processed" / "bm25.pkl")
+        processed = project_root / "data" / "processed"
+
+        # index_path is now a folder (LangChain FAISS format)
+        self.index_path = index_path or str(processed / "faiss_lc")
+        self.metadata_path = metadata_path or str(processed / "metadata.json")
+        self.bm25_path = bm25_path or str(processed / "bm25.pkl")
         self.embedding_model_name = embedding_model
         self.llm_backend = llm_backend
+        self.reranker_model = reranker_model
 
-        # Set default LLM model per backend
         if llm_model:
             self.llm_model = llm_model
         elif llm_backend == "ollama":
@@ -174,273 +180,155 @@ class QueryPipeline:
         else:
             self.llm_model = "claude-haiku-4-5-20251001"
 
-        # Load FAISS index
-        log.info("Loading FAISS index from %s", self.index_path)
-        self.index = faiss.read_index(self.index_path)
+        # ------------------------------------------------------------------
+        # 1. LangChain embeddings function
+        # ------------------------------------------------------------------
+        if embedding_model == "text-embedding-3-small":
+            from langchain_openai import OpenAIEmbeddings
+            log.info("Using OpenAI embeddings: %s", embedding_model)
+            self._embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        else:
+            from langchain_huggingface import HuggingFaceEmbeddings
+            log.info("Loading HuggingFace embeddings: %s", embedding_model)
+            self._embeddings = HuggingFaceEmbeddings(
+                model_name=embedding_model,
+                encode_kwargs={"normalize_embeddings": True},
+            )
 
-        # Load metadata
-        with open(self.metadata_path, encoding="utf-8") as f:
-            self.metadata = json.load(f)
+        # ------------------------------------------------------------------
+        # 2. LangChain FAISS vectorstore
+        # ------------------------------------------------------------------
+        from langchain_community.vectorstores import FAISS
 
-        # Load BM25 index (optional — hybrid retrieval degrades gracefully)
-        self.bm25 = None
+        log.info("Loading FAISS vectorstore from %s/", self.index_path)
+        self._vectorstore = FAISS.load_local(
+            self.index_path,
+            self._embeddings,
+            allow_dangerous_deserialization=True,
+        )
+
+        # ------------------------------------------------------------------
+        # 3. BM25 index + metadata (positionally aligned)
+        # ------------------------------------------------------------------
+        self._bm25 = None
+        self._metadata: list[dict] = []
+
         if Path(self.bm25_path).exists():
             log.info("Loading BM25 index from %s", self.bm25_path)
             with open(self.bm25_path, "rb") as f:
-                self.bm25 = pickle.load(f)
+                self._bm25 = pickle.load(f)
         else:
             log.warning("BM25 index not found at %s — hybrid retrieval disabled", self.bm25_path)
 
-        # Load embedding model (local or OpenAI)
-        self._openai_embed_client = None
-        if self.embedding_model_name == "text-embedding-3-small":
-            log.info("Using OpenAI embedding model: %s", self.embedding_model_name)
-            import openai
-            api_key = os.environ.get("OPENAI_API_KEY")
-            if not api_key:
-                log.warning("OPENAI_API_KEY not set — query embedding will fail")
-            else:
-                self._openai_embed_client = openai.OpenAI(api_key=api_key)
-            self.embed_model = None
+        if Path(self.metadata_path).exists():
+            with open(self.metadata_path, encoding="utf-8") as f:
+                self._metadata = json.load(f)
         else:
-            log.info("Loading embedding model: %s", self.embedding_model_name)
-            self.embed_model = SentenceTransformer(self.embedding_model_name)
+            log.warning("metadata.json not found at %s — BM25 lookup disabled", self.metadata_path)
 
-        # Init Anthropic client (only if using anthropic backend)
-        self.anthropic_client = None
-        if self.llm_backend == "anthropic":
+        # ------------------------------------------------------------------
+        # 4. LangChain LLM
+        # ------------------------------------------------------------------
+        if llm_backend == "anthropic":
+            from langchain_anthropic import ChatAnthropic
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
                 log.warning("ANTHROPIC_API_KEY not set — LLM synthesis will fail")
-            else:
-                self.anthropic_client = anthropic.Anthropic(api_key=api_key)
+            self._llm = ChatAnthropic(
+                model=self.llm_model,
+                max_tokens=2048,
+                api_key=api_key or "missing",
+            )
+        else:
+            from langchain_community.chat_models import ChatOllama
+            self._llm = ChatOllama(
+                model=self.llm_model,
+                base_url=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            )
+
+        # Structured-output LLM (used for non-streaming synthesis)
+        self._structured_llm = self._llm.with_structured_output(LLMResponse)
+
+        # Synthesis prompt
+        from langchain_core.prompts import ChatPromptTemplate
+        self._synthesis_prompt = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPT),
+            ("human",
+             'User query: "{query}"\n\n'
+             "Retrieved lyrics from database:\n\n{context}\n\n"
+             "Based on these retrieved excerpts, identify the song(s) the user is looking for."),
+        ])
+        # Streaming synthesis uses a plain JSON-in-prompt approach
+        self._stream_prompt = ChatPromptTemplate.from_messages([
+            ("system", STREAMING_SYSTEM_PROMPT),
+            ("human",
+             'User query: "{query}"\n\n'
+             "Retrieved lyrics from database:\n\n{context}\n\n"
+             "Identify the song(s) and return ONLY valid JSON."),
+        ])
+        # HyDE prompt
+        self._hyde_prompt = ChatPromptTemplate.from_messages([
+            ("system", HYDE_PROMPT),
+            ("human", "User is looking for: {query}"),
+        ])
 
         # Reranker loaded lazily on first use
         self._reranker = None
-        self.reranker_model = reranker_model
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_langfuse_handler(self, session_id: str | None):
+        """Create a per-query LangfuseCallbackHandler for automatic tracing."""
+        from langfuse.callback import CallbackHandler
+        kwargs = {
+            "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
+            "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
+            "host": os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+        }
+        if session_id:
+            kwargs["session_id"] = session_id
+        return CallbackHandler(**kwargs)
 
     def _get_reranker(self):
-        """Lazy-load the cross-encoder reranker on first use."""
         if self._reranker is None:
-            from pipeline.reranker import Reranker
-            self._reranker = Reranker(model_name=self.reranker_model)
+            from pipeline.reranker import build_reranker
+            self._reranker = build_reranker(self.reranker_model, top_n=1)
         return self._reranker
 
-    def _embed_text(self, text: str) -> np.ndarray:
-        """Embed a single text string, normalized for cosine similarity."""
-        if self._openai_embed_client:
-            response = self._openai_embed_client.embeddings.create(
-                model="text-embedding-3-small", input=[text],
-            )
-            emb = np.array([response.data[0].embedding], dtype=np.float32)
-            norms = np.linalg.norm(emb, axis=1, keepdims=True)
-            norms[norms == 0] = 1
-            return emb / norms
-        return self.embed_model.encode(
-            [text], normalize_embeddings=True
-        ).astype(np.float32)
-
-    def _generate_hyde_hypothesis(self, query: str) -> str:
-        """
-        Generate a hypothetical lyric using the LLM for HyDE retrieval.
-
-        HyDE (Hypothetical Document Embeddings) intuition:
-        Instead of embedding the user's natural language query (which lives in
-        "question space"), we ask the LLM to generate what the answer might
-        look like (a hypothetical lyric). This hypothetical lyric lives in
-        "document space" — the same space as the indexed chunks — so it
-        produces better similarity matches.
-
-        For lyrics specifically, this helps because:
-        - A query like "sad song about rain" is very different linguistically
-          from actual lyrics about rain and sadness
-        - A hypothetical lyric like "raindrops fall on empty streets / tears I
-          cannot hide" is much closer to how real lyrics are written
-        - The embedding of the hypothesis will be nearer to relevant chunks
-          in the vector space
-        """
-        try:
-            if self.llm_backend == "anthropic":
-                return self._call_anthropic(HYDE_PROMPT, f"User is looking for: {query}")
-            else:
-                return self._call_ollama(HYDE_PROMPT, f"User is looking for: {query}")
-        except Exception as e:
-            # Content filtering or API errors — fall back to raw query
-            log.warning("HyDE hypothesis generation failed: %s. Falling back to raw query.", e)
-            return query
-
-    @observe(as_type="generation", name="hyde-hypothesis")
-    def _call_anthropic(self, system: str, user_message: str) -> str:
-        """Call Claude via the Anthropic API (plain text, used for HyDE)."""
-        if not self.anthropic_client:
-            return "[Error: ANTHROPIC_API_KEY not configured]"
-
-        response = self.anthropic_client.messages.create(
-            model=self.llm_model,
-            max_tokens=1024,
-            system=system,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        get_client().update_current_generation(
-            model=self.llm_model,
-            usage_details={"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens},
-        )
-        return response.content[0].text
-
-    @observe(as_type="generation", name="anthropic-structured")
-    def _call_anthropic_structured(self, system: str, user_message: str) -> LLMResponse:
-        """
-        Call Claude with tool_use to get structured JSON output.
-
-        Uses tool_use: defines a tool whose input_schema matches the Pydantic
-        model. Claude returns structured JSON as the tool call arguments, which
-        we parse and validate with Pydantic.
-        """
-        if not self.anthropic_client:
-            return LLMResponse(
-                matches=[], confidence="low",
-                summary="Error: ANTHROPIC_API_KEY not configured",
-            )
-
-        response = self.anthropic_client.messages.create(
-            model=self.llm_model,
-            max_tokens=2048,
-            system=system,
-            messages=[{"role": "user", "content": user_message}],
-            tools=[RESPONSE_TOOL],
-            tool_choice={"type": "tool", "name": "format_response"},
-        )
-
-        # Extract tool call arguments
-        result = LLMResponse(
-            matches=[], confidence="low",
-            summary="Failed to parse structured response from LLM.",
-        )
-        for block in response.content:
-            if block.type == "tool_use":
-                result = LLMResponse.model_validate(block.input)
-                break
-
-        get_client().update_current_generation(
-            model=self.llm_model,
-            input=user_message,
-            output=result.model_dump(),
-            usage_details={"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens},
-        )
-        return result
-
-    def _get_ollama_url(self) -> str:
-        """Get the Ollama API base URL from env or default."""
-        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        return f"{host}/api/chat"
-
-    @observe(as_type="generation", name="hyde-hypothesis-ollama")
-    def _call_ollama(self, system: str, user_message: str) -> str:
-        """
-        Call a local LLM via the Ollama REST API (plain text, used for HyDE).
-
-        Ollama is a tool for running open-source LLMs locally. It downloads,
-        manages, and serves models via a simple REST API on localhost:11434.
-
-        Install: https://ollama.com/download
-        Pull Llama 3: ollama pull llama3
-        It runs automatically after install — no manual start needed.
-        """
-        url = self._get_ollama_url()
-        payload = {
-            "model": self.llm_model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_message},
-            ],
-            "stream": False,
+    def _doc_to_chunk(self, doc, score: float = 0.0) -> dict:
+        """Convert a LangChain Document returned by FAISS to a chunk dict."""
+        meta = doc.metadata
+        chunk = {
+            "text": meta.get("original_text", doc.page_content),
+            "title": meta.get("title", ""),
+            "artist": meta.get("artist", ""),
+            "album": meta.get("album"),
+            "release_date": meta.get("release_date"),
+            "chunk_index": meta.get("chunk_index", 0),
+            "score": score,
         }
+        if "relevance_score" in meta:
+            chunk["cross_encoder_score"] = meta["relevance_score"]
+        return chunk
 
-        get_client().update_current_generation(model=self.llm_model)
-        try:
-            resp = requests.post(url, json=payload, timeout=120)
-            resp.raise_for_status()
-            return resp.json()["message"]["content"]
-        except requests.ConnectionError:
-            return (
-                "[Error: Cannot connect to Ollama. "
-                "Make sure Ollama is installed and running. "
-                "Install: https://ollama.com/download | "
-                "Pull model: ollama pull llama3]"
-            )
-        except requests.Timeout:
-            return "[Error: Ollama request timed out after 120s]"
-        except Exception as e:
-            return f"[Error: Ollama request failed: {e}]"
-
-    @observe(as_type="generation", name="ollama-structured")
-    def _call_ollama_structured(self, system: str, user_message: str) -> LLMResponse:
-        """
-        Call Ollama with the format parameter to get structured JSON output.
-
-        Uses the format parameter with the Pydantic model's JSON schema,
-        which forces Ollama to return conforming JSON.
-        """
-        get_client().update_current_generation(model=self.llm_model, input=user_message)
-        url = self._get_ollama_url()
-        payload = {
-            "model": self.llm_model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_message},
-            ],
-            "stream": False,
-            "format": LLMResponse.model_json_schema(),
-        }
-
-        try:
-            resp = requests.post(url, json=payload, timeout=120)
-            resp.raise_for_status()
-            content = resp.json()["message"]["content"]
-            result = LLMResponse.model_validate_json(content)
-            get_client().update_current_generation(output=result.model_dump())
-            return result
-        except requests.ConnectionError:
-            return LLMResponse(
-                matches=[], confidence="low",
-                summary="Error: Cannot connect to Ollama. Install: https://ollama.com/download",
-            )
-        except Exception as e:
-            return LLMResponse(
-                matches=[], confidence="low",
-                summary=f"Error: Ollama request failed: {e}",
-            )
+    # ------------------------------------------------------------------
+    # Retrieval
+    # ------------------------------------------------------------------
 
     def retrieve(self, query: str, top_k: int = 5) -> list[dict]:
-        """
-        Embed query and retrieve top-k similar chunks from FAISS.
-
-        Returns a list of dicts with a "score" field (FAISS cosine similarity).
-        """
-        q_emb = self._embed_text(query)
-        scores, indices = self.index.search(q_emb, top_k)
-
-        results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx < 0:
-                continue
-            entry = dict(self.metadata[idx])
-            entry["score"] = float(score)
-            results.append(entry)
-
-        return results
+        """Dense retrieval via LangChain FAISS vectorstore."""
+        results = self._vectorstore.similarity_search_with_score(query, k=top_k)
+        return [self._doc_to_chunk(doc, float(score)) for doc, score in results]
 
     def retrieve_bm25(self, query: str, top_k: int = 5) -> list[dict]:
-        """
-        Retrieve top-k chunks using BM25 keyword search.
-
-        Returns a list of dicts with a "bm25_score" field.
-        """
-        if self.bm25 is None:
+        """Sparse BM25 keyword retrieval using the pickled BM25Okapi index."""
+        if self._bm25 is None or not self._metadata:
             return []
 
         tokenized_query = query.lower().split()
-        scores = self.bm25.get_scores(tokenized_query)
+        scores = self._bm25.get_scores(tokenized_query)
         top_indices = np.argsort(scores)[::-1][:top_k]
 
         results = []
@@ -448,133 +336,117 @@ class QueryPipeline:
             idx = int(idx)
             if scores[idx] <= 0:
                 break
-            entry = dict(self.metadata[idx])
+            entry = dict(self._metadata[idx])
             entry["bm25_score"] = float(scores[idx])
+            entry.setdefault("score", 0.0)
             results.append(entry)
-
         return results
 
     def retrieve_hybrid(
         self, query: str, top_k: int = 5, rrf_k: int = 60,
     ) -> list[dict]:
         """
-        Hybrid retrieval: FAISS dense + BM25 sparse, merged with
-        Reciprocal Rank Fusion (RRF).
+        Hybrid retrieval: FAISS dense + BM25 sparse merged with RRF.
 
-        RRF formula: score(d) = Σ 1 / (k + rank_i(d))
-        where k=60 is the standard constant.
-
-        Why hybrid helps:
-        - Dense (FAISS) captures semantic meaning — good for descriptive
-          queries like "sad song about rain"
-        - Sparse (BM25) captures exact keyword matches — good for direct
-          lyric recall like "never gonna give you up"
-        - Combining them covers both query types without needing to know
-          which type the user is issuing.
+        EnsembleRetriever (LangChain's built-in RRF combiner) requires both
+        retrievers to return Documents with identical page_content for
+        deduplication to work correctly.  Because the FAISS Documents store
+        contextual text while BM25 aligns on raw lyrics, we keep the manual
+        RRF implementation from the custom branch — the algorithm is unchanged.
         """
         fetch_k = top_k * 3
 
-        # Get ranked lists from both methods
         dense_results = self.retrieve(query, top_k=fetch_k)
         sparse_results = self.retrieve_bm25(query, top_k=fetch_k)
 
-        # Build RRF scores keyed by metadata index
-        # We need a unique identifier — use (title, artist, chunk_index)
         def chunk_key(r):
             return (r["title"], r["artist"], r["chunk_index"])
 
-        rrf_scores = defaultdict(float)
-        chunk_data = {}
+        rrf_scores: dict = defaultdict(float)
+        chunk_data: dict = {}
 
         for rank, r in enumerate(dense_results, 1):
             key = chunk_key(r)
             rrf_scores[key] += 1.0 / (rrf_k + rank)
             if key not in chunk_data:
                 chunk_data[key] = dict(r)
-            chunk_data[key]["score"] = r["score"]  # FAISS score
+            chunk_data[key]["score"] = r["score"]
 
         for rank, r in enumerate(sparse_results, 1):
             key = chunk_key(r)
             rrf_scores[key] += 1.0 / (rrf_k + rank)
             if key not in chunk_data:
                 chunk_data[key] = dict(r)
-                chunk_data[key]["score"] = 0.0  # no FAISS score
+                chunk_data[key]["score"] = 0.0
             chunk_data[key]["bm25_score"] = r["bm25_score"]
 
-        # Sort by RRF score and return top_k
-        ranked_keys = sorted(rrf_scores.keys(), key=lambda k: rrf_scores[k], reverse=True)[:top_k]
-
+        ranked_keys = sorted(rrf_scores, key=lambda k: rrf_scores[k], reverse=True)[:top_k]
         results = []
         for key in ranked_keys:
             entry = chunk_data[key]
             entry["rrf_score"] = rrf_scores[key]
             results.append(entry)
-
         return results
 
     def group_by_song(self, results: list[dict]) -> list[dict]:
-        """
-        Group retrieved chunks by song (title + artist).
-        Preserves both FAISS and cross-encoder scores when available.
-        Songs are ranked by their best score.
-        """
-        groups = defaultdict(lambda: {
+        """Group retrieved chunks by (title, artist) and rank by best score."""
+        groups: dict = defaultdict(lambda: {
             "title": "", "artist": "", "album": None,
             "release_date": None, "best_score": 0.0, "chunks": [],
         })
 
         for r in results:
             key = (r["title"], r["artist"])
-            group = groups[key]
-            group["title"] = r["title"]
-            group["artist"] = r["artist"]
-            group["album"] = r.get("album")
-            group["release_date"] = r.get("release_date")
+            g = groups[key]
+            g["title"] = r["title"]
+            g["artist"] = r["artist"]
+            g["album"] = r.get("album")
+            g["release_date"] = r.get("release_date")
 
-            # Use cross-encoder > RRF > FAISS in priority order
             ranking_score = r.get("cross_encoder_score", r.get("rrf_score", r["score"]))
-            group["best_score"] = max(group["best_score"], ranking_score)
+            g["best_score"] = max(g["best_score"], ranking_score)
 
-            chunk_data = {
-                "text": r["text"],
-                "score": r["score"],
-                "chunk_index": r["chunk_index"],
-            }
-            if "bm25_score" in r:
-                chunk_data["bm25_score"] = r["bm25_score"]
-            if "rrf_score" in r:
-                chunk_data["rrf_score"] = r["rrf_score"]
-            if "cross_encoder_score" in r:
-                chunk_data["cross_encoder_score"] = r["cross_encoder_score"]
+            chunk_data = {"text": r["text"], "score": r["score"], "chunk_index": r["chunk_index"]}
+            for field in ("bm25_score", "rrf_score", "cross_encoder_score"):
+                if field in r:
+                    chunk_data[field] = r[field]
+            g["chunks"].append(chunk_data)
 
-            group["chunks"].append(chunk_data)
+        return sorted(groups.values(), key=lambda g: g["best_score"], reverse=True)
 
-        ranked = sorted(groups.values(), key=lambda g: g["best_score"], reverse=True)
-        return ranked
+    # ------------------------------------------------------------------
+    # Reranking
+    # ------------------------------------------------------------------
 
-    def _build_user_message(self, query: str, grouped_results: list[dict]) -> str:
-        """Build the user message for LLM synthesis."""
-        context = build_context(grouped_results)
-        return (
-            f"User query: \"{query}\"\n\n"
-            f"Retrieved lyrics from database:\n\n{context}\n\n"
-            f"Based on these retrieved excerpts, identify the song(s) the user is looking for."
-        )
-
-    def synthesize(self, query: str, grouped_results: list[dict]) -> LLMResponse:
+    def _rerank_chunks(
+        self, query: str, chunks: list[dict], top_k: int, config: dict,
+    ) -> list[dict]:
         """
-        Send the query and retrieved context to the LLM for structured synthesis.
+        Rerank chunk dicts using LangChain's CrossEncoderReranker.
 
-        Returns a validated LLMResponse Pydantic object.
+        We wrap dicts as Documents (so the LangChain compressor can score them),
+        then unwrap back to dicts with the relevance_score attached.
         """
-        user_message = self._build_user_message(query, grouped_results)
+        from langchain_core.documents import Document
 
-        if self.llm_backend == "anthropic":
-            return self._call_anthropic_structured(SYSTEM_PROMPT, user_message)
-        else:
-            return self._call_ollama_structured(SYSTEM_PROMPT, user_message)
+        reranker = self._get_reranker()
+        # Override top_n for this specific call
+        reranker.top_n = top_k
 
-    @observe(name="retrieval")
+        docs = [Document(page_content=c["text"], metadata=c) for c in chunks]
+        reranked = reranker.compress_documents(docs, query, callbacks=config.get("callbacks"))
+
+        result = []
+        for doc in reranked:
+            chunk = dict(doc.metadata)
+            chunk["cross_encoder_score"] = doc.metadata.get("relevance_score", 0.0)
+            result.append(chunk)
+        return result
+
+    # ------------------------------------------------------------------
+    # Retrieval step (shared by query / query_stream)
+    # ------------------------------------------------------------------
+
     def _retrieve_step(
         self,
         query: str,
@@ -584,19 +456,12 @@ class QueryPipeline:
         use_reranker: bool,
         rrf_k: int = 60,
         fetch_k_multiplier: int = 3,
+        config: dict | None = None,
     ) -> list[dict]:
-        """
-        Shared retrieval logic for query() and query_stream().
-        Returns raw results (before grouping).
-        """
-        # Fetch more than top_k if reranking, so the reranker has more to work with
+        config = config or {}
         fetch_k = top_k * fetch_k_multiplier if use_reranker else top_k
-        get_client().update_current_span(
-            input={"query": query, "retrieval_query": retrieval_query},
-            metadata={"use_hybrid": use_hybrid, "use_reranker": use_reranker, "top_k": top_k, "fetch_k": fetch_k},
-        )
 
-        if use_hybrid and self.bm25 is not None:
+        if use_hybrid and self._bm25 is not None:
             log.info("Hybrid retrieval (FAISS + BM25 with RRF)...")
             raw_results = self.retrieve_hybrid(retrieval_query, top_k=fetch_k, rrf_k=rrf_k)
         else:
@@ -604,19 +469,36 @@ class QueryPipeline:
 
         log.info("Retrieved %d chunks", len(raw_results))
 
-        # Optionally re-rank with cross-encoder
         if use_reranker and raw_results:
-            log.info("Re-ranking with cross-encoder...")
-            reranker = self._get_reranker()
-            # Rerank using the ORIGINAL query (not the HyDE hypothesis),
-            # because the cross-encoder should judge relevance to what the
-            # user actually asked for.
-            raw_results = reranker.rerank(query, raw_results, top_k=top_k)
+            log.info("Re-ranking with LangChain CrossEncoderReranker...")
+            raw_results = self._rerank_chunks(query, raw_results, top_k, config)
             log.info("Re-ranked to top %d", len(raw_results))
 
         return raw_results
 
-    @observe(name="rag-query")
+    # ------------------------------------------------------------------
+    # HyDE
+    # ------------------------------------------------------------------
+
+    def _generate_hyde_hypothesis(self, query: str, config: dict) -> str:
+        """
+        Generate a hypothetical lyric passage using the LLM for HyDE retrieval.
+
+        Uses a plain ChatPromptTemplate + LLM chain via LCEL so that the call
+        is automatically traced by the Langfuse callback handler.
+        """
+        try:
+            chain = self._hyde_prompt | self._llm
+            result = chain.invoke({"query": query}, config=config)
+            return result.content
+        except Exception as e:
+            log.warning("HyDE hypothesis generation failed: %s. Falling back to raw query.", e)
+            return query
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def query(
         self,
         query: str,
@@ -631,80 +513,66 @@ class QueryPipeline:
         """
         Full RAG pipeline: [HyDE] → retrieve [hybrid] → [rerank] → group → synthesize.
 
-        Args:
-            query: Natural language query.
-            top_k: Number of chunks to retrieve.
-            use_hyde: If True, generate a hypothetical lyric and embed that instead.
-            use_hybrid: If True, combine FAISS + BM25 with RRF (default True).
-            use_reranker: If True, re-rank retrieved chunks with cross-encoder.
-            rrf_k: RRF fusion constant for hybrid retrieval (default 60).
-            fetch_k_multiplier: How many more candidates to fetch before re-ranking (default 3).
-            session_id: Optional session identifier forwarded to Langfuse for trace correlation.
+        All LangChain calls are automatically traced by the LangfuseCallbackHandler
+        injected via config= — no manual @observe decorators needed.
 
-        Returns:
-            {
-                "query": str,
-                "retrieval_results": list[dict],  # grouped by song
-                "llm_response": str,
-                "hyde_hypothesis": str | None,
-            }
+        Returns the same dict structure as the custom branch:
+            {query, retrieval_results, llm_response, hyde_hypothesis}
         """
-        lf = get_client()
+        langfuse_handler = self._get_langfuse_handler(session_id)
+        config = {
+            "callbacks": [langfuse_handler],
+            "metadata": {
+                "embedding_model": self.embedding_model_name,
+                "llm_model": self.llm_model,
+                "llm_backend": self.llm_backend,
+                "use_hyde": use_hyde,
+                "use_hybrid": use_hybrid,
+                "use_reranker": use_reranker,
+                "top_k": top_k,
+            },
+        }
+
         log.info(
             "Query: '%s' (top_k=%d, hyde=%s, hybrid=%s, reranker=%s, backend=%s)",
             query, top_k, use_hyde, use_hybrid, use_reranker, self.llm_backend,
         )
 
-        _pa_kwargs: dict = {"metadata": {
-            "embedding_model": self.embedding_model_name,
-            "llm_model": self.llm_model,
-            "llm_backend": self.llm_backend,
-            "use_hyde": use_hyde,
-            "use_hybrid": use_hybrid,
-            "use_reranker": use_reranker,
-            "top_k": top_k,
-        }}
-        if session_id:
-            _pa_kwargs["session_id"] = session_id
+        # Step 1: HyDE
+        hyde_hypothesis = None
+        retrieval_query = query
+        if use_hyde:
+            log.info("Generating HyDE hypothesis...")
+            hyde_hypothesis = self._generate_hyde_hypothesis(query, config)
+            retrieval_query = hyde_hypothesis
+            log.info("HyDE: %s", hyde_hypothesis[:100])
 
-        with propagate_attributes(**_pa_kwargs):
-            lf.set_current_trace_io(input=query)
+        # Step 2 + 3: Retrieve + rerank
+        raw_results = self._retrieve_step(
+            query, retrieval_query, top_k, use_hybrid, use_reranker,
+            rrf_k=rrf_k, fetch_k_multiplier=fetch_k_multiplier, config=config,
+        )
 
-            # Step 1: Optionally generate HyDE hypothesis
-            hyde_hypothesis = None
-            retrieval_query = query
+        # Step 4: Group by song
+        grouped = self.group_by_song(raw_results)
+        log.info("Grouped into %d unique song(s)", len(grouped))
 
-            if use_hyde:
-                log.info("Generating HyDE hypothesis...")
-                hyde_hypothesis = self._generate_hyde_hypothesis(query)
-                retrieval_query = hyde_hypothesis
-                log.info("HyDE hypothesis: %s", hyde_hypothesis[:100] + "...")
+        # Step 5: LLM synthesis via LCEL chain with structured output
+        context = build_context(grouped)
+        synthesis_chain = self._synthesis_prompt | self._structured_llm
+        llm_response: LLMResponse = synthesis_chain.invoke(
+            {"query": query, "context": context}, config=config,
+        )
+        log.info("LLM confidence: %s, matches: %d", llm_response.confidence, len(llm_response.matches))
 
-            # Step 2 + 3: Retrieve and optionally re-rank
-            raw_results = self._retrieve_step(
-                query, retrieval_query, top_k, use_hybrid, use_reranker,
-                rrf_k=rrf_k, fetch_k_multiplier=fetch_k_multiplier,
-            )
+        langfuse_handler.flush()
+        return {
+            "query": query,
+            "retrieval_results": grouped,
+            "llm_response": llm_response,
+            "hyde_hypothesis": hyde_hypothesis,
+        }
 
-            # Step 4: Group by song
-            grouped = self.group_by_song(raw_results)
-            log.info("Grouped into %d unique song(s)", len(grouped))
-
-            # Step 5: Synthesize with LLM (structured output)
-            llm_response = self.synthesize(query, grouped)
-            log.info("LLM confidence: %s, matches: %d", llm_response.confidence, len(llm_response.matches))
-
-            lf.set_current_trace_io(
-                output={"confidence": llm_response.confidence, "num_matches": len(llm_response.matches)},
-            )
-            return {
-                "query": query,
-                "retrieval_results": grouped,
-                "llm_response": llm_response,
-                "hyde_hypothesis": hyde_hypothesis,
-            }
-
-    @observe(name="rag-query-stream")
     def query_stream(
         self,
         query: str,
@@ -717,155 +585,63 @@ class QueryPipeline:
         session_id: str | None = None,
     ) -> Generator[dict | str, None, None]:
         """
-        Streaming RAG pipeline. Yields:
-        1. First yield: a dict with retrieval_results + hyde_hypothesis
-           (so the caller can display results immediately)
-        2. Subsequent yields: individual string tokens from the LLM response
+        Streaming RAG pipeline — same yield contract as the custom branch:
 
-        Usage:
-            stream = pipeline.query_stream("sad song about rain")
-            first = next(stream)  # dict with retrieval_results
-            for token in stream:  # str tokens from LLM
-                print(token, end="")
+        1. First yield: dict {retrieval_results, hyde_hypothesis}
+        2. Subsequent yields: str JSON token fragments from the LLM
+
+        The LLM is called with a JSON-format system prompt (no tool_use) so
+        that .stream() yields simple text tokens that app.py can accumulate
+        and parse into LLMResponse at the end.
         """
-        lf = get_client()
+        langfuse_handler = self._get_langfuse_handler(session_id)
+        config = {"callbacks": [langfuse_handler]}
+
         log.info(
             "Stream query: '%s' (top_k=%d, hyde=%s, hybrid=%s, reranker=%s, backend=%s)",
             query, top_k, use_hyde, use_hybrid, use_reranker, self.llm_backend,
         )
 
-        _pa_kwargs: dict = {"metadata": {
-            "embedding_model": self.embedding_model_name,
-            "llm_model": self.llm_model,
-            "llm_backend": self.llm_backend,
-            "use_hyde": use_hyde,
-            "use_hybrid": use_hybrid,
-            "use_reranker": use_reranker,
-            "top_k": top_k,
-        }}
-        if session_id:
-            _pa_kwargs["session_id"] = session_id
+        # Step 1: HyDE
+        hyde_hypothesis = None
+        retrieval_query = query
+        if use_hyde:
+            hyde_hypothesis = self._generate_hyde_hypothesis(query, config)
+            retrieval_query = hyde_hypothesis
 
-        with propagate_attributes(**_pa_kwargs):
-            lf.set_current_trace_io(input=query)
+        # Step 2 + 3: Retrieve + rerank
+        raw_results = self._retrieve_step(
+            query, retrieval_query, top_k, use_hybrid, use_reranker,
+            rrf_k=rrf_k, fetch_k_multiplier=fetch_k_multiplier, config=config,
+        )
 
-            # Step 1: Optionally generate HyDE hypothesis
-            hyde_hypothesis = None
-            retrieval_query = query
+        # Step 4: Group by song — yield immediately so UI can display while LLM runs
+        grouped = self.group_by_song(raw_results)
+        yield {"retrieval_results": grouped, "hyde_hypothesis": hyde_hypothesis}
 
-            if use_hyde:
-                log.info("Generating HyDE hypothesis...")
-                hyde_hypothesis = self._generate_hyde_hypothesis(query)
-                retrieval_query = hyde_hypothesis
-
-            # Step 2 + 3: Retrieve and optionally re-rank
-            raw_results = self._retrieve_step(
-                query, retrieval_query, top_k, use_hybrid, use_reranker,
-                rrf_k=rrf_k, fetch_k_multiplier=fetch_k_multiplier,
-            )
-
-            # Step 4: Group by song
-            grouped = self.group_by_song(raw_results)
-
-            # Yield retrieval results immediately so the UI can display them
-            yield {
-                "retrieval_results": grouped,
-                "hyde_hypothesis": hyde_hypothesis,
-            }
-
-            # Step 5: Stream LLM synthesis
-            context = build_context(grouped)
-            user_message = (
-                f"User query: \"{query}\"\n\n"
-                f"Retrieved lyrics from database:\n\n{context}\n\n"
-                f"Based on these retrieved excerpts, identify the song(s) the user is looking for."
-            )
-
-            if self.llm_backend == "anthropic":
-                yield from self._stream_anthropic(SYSTEM_PROMPT, user_message)
-            else:
-                yield from self._stream_ollama(SYSTEM_PROMPT, user_message)
-
-    @observe(as_type="generation", name="anthropic-stream")
-    def _stream_anthropic(self, system: str, user_message: str) -> Generator[str, None, None]:
-        """
-        Stream tokens from Claude via the Anthropic API using tool_use.
-
-        Streams the JSON being built as tool input. The caller collects all
-        tokens and parses the final JSON into LLMResponse after stream completes.
-        """
-        get_client().update_current_generation(model=self.llm_model)
-        if not self.anthropic_client:
-            yield "[Error: ANTHROPIC_API_KEY not configured]"
-            return
-
+        # Step 5: Stream LLM synthesis
+        context = build_context(grouped)
+        stream_chain = self._stream_prompt | self._llm
         try:
-            with self.anthropic_client.messages.stream(
-                model=self.llm_model,
-                max_tokens=2048,
-                system=system,
-                messages=[{"role": "user", "content": user_message}],
-                tools=[RESPONSE_TOOL],
-                tool_choice={"type": "tool", "name": "format_response"},
-            ) as stream:
-                for event in stream:
-                    if event.type == "content_block_delta" and event.delta.type == "input_json_delta":
-                        yield event.delta.partial_json
-        except anthropic.APIStatusError as e:
-            error_msg = e.body.get("error", {}).get("message", str(e)) if isinstance(e.body, dict) else str(e)
-            if "content filtering" in error_msg.lower():
-                yield "[Error: Response blocked by content filter. Try rephrasing your query.]"
-            else:
-                yield f"[Error: Anthropic API error: {error_msg}]"
-        except anthropic.APIConnectionError:
-            yield "[Error: Cannot connect to Anthropic API. Check your network.]"
-        except anthropic.RateLimitError:
-            yield "[Error: Rate limit exceeded. Please wait and retry.]"
-        except anthropic.APITimeoutError:
-            yield "[Error: Request timed out. Please retry.]"
-
-    @observe(as_type="generation", name="ollama-stream")
-    def _stream_ollama(self, system: str, user_message: str) -> Generator[str, None, None]:
-        """
-        Stream tokens from Ollama REST API with structured format.
-
-        Streams the JSON being built token by token. The caller collects all
-        tokens and parses the final JSON into LLMResponse after stream completes.
-        """
-        get_client().update_current_generation(model=self.llm_model)
-        url = self._get_ollama_url()
-        payload = {
-            "model": self.llm_model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_message},
-            ],
-            "stream": True,
-            "format": LLMResponse.model_json_schema(),
-        }
-
-        try:
-            resp = requests.post(url, json=payload, timeout=120, stream=True)
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if line:
-                    data = json.loads(line)
-                    content = data.get("message", {}).get("content", "")
-                    if content:
-                        yield content
-        except requests.ConnectionError:
-            yield (
-                "[Error: Cannot connect to Ollama. "
-                "Install: https://ollama.com/download | Pull model: ollama pull llama3]"
-            )
+            for chunk in stream_chain.stream(
+                {"query": query, "context": context}, config=config,
+            ):
+                token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if token:
+                    yield token
         except Exception as e:
-            yield f"[Error: Ollama streaming failed: {e}]"
+            yield f"[Error: LLM streaming failed: {e}]"
+        finally:
+            langfuse_handler.flush()
 
+
+# ---------------------------------------------------------------------------
+# CLI helpers
+# ---------------------------------------------------------------------------
 
 def print_results(result: dict) -> None:
-    """Pretty-print query results for CLI usage."""
     print("\n" + "=" * 60)
-    print(f"  Query: \"{result['query']}\"")
+    print(f'  Query: "{result["query"]}"')
     print("=" * 60)
 
     if result.get("hyde_hypothesis"):
@@ -878,16 +654,16 @@ def print_results(result: dict) -> None:
     for match in llm.matches:
         print(f"  {match.title} by {match.artist}")
         if match.relevant_lyric:
-            print(f"    Lyric: \"{match.relevant_lyric[:150]}\"")
+            print(f'    Lyric: "{match.relevant_lyric[:150]}"')
         print(f"    Why: {match.explanation}")
         print()
 
     print("--- Retrieved Chunks ---\n")
     for song in result["retrieval_results"]:
-        print(f"  {song['title']} by {song['artist']} "
-              f"[best score: {song['best_score']:.3f}]")
-        print(f"  Album: {song['album'] or 'Unknown'} | "
-              f"Released: {song['release_date'] or 'Unknown'}")
+        print(
+            f"  {song['title']} by {song['artist']} "
+            f"[best score: {song['best_score']:.3f}]"
+        )
         for chunk in song["chunks"]:
             score_parts = [f"FAISS: {chunk['score']:.3f}"]
             if "cross_encoder_score" in chunk:
@@ -901,20 +677,18 @@ def main():
     if sys.stdout.encoding != "utf-8":
         sys.stdout.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="Query the lyrics RAG pipeline")
+    parser = argparse.ArgumentParser(description="Query the lyrics RAG pipeline (LangChain)")
     parser.add_argument("query", help="Natural language query")
-    parser.add_argument("--top-k", type=int, default=5, help="Number of chunks to retrieve (default: 5)")
-    parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2", help="Embedding model (must match index-time model)")
-    parser.add_argument("--use-hyde", action="store_true", help="Use HyDE (Hypothetical Document Embeddings) for retrieval")
-    parser.add_argument("--no-hybrid", action="store_true", help="Disable hybrid retrieval (use FAISS only)")
-    parser.add_argument("--use-reranker", action="store_true", help="Re-rank results with cross-encoder")
+    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2")
+    parser.add_argument("--use-hyde", action="store_true")
+    parser.add_argument("--no-hybrid", action="store_true")
+    parser.add_argument("--use-reranker", action="store_true")
     parser.add_argument(
         "--reranker-model", default="cross-encoder/ms-marco-MiniLM-L-6-v2",
-        help="Cross-encoder model for re-ranking (default: cross-encoder/ms-marco-MiniLM-L-6-v2). "
-             "Alternatives: cross-encoder/ms-marco-MiniLM-L-12-v2, BAAI/bge-reranker-base"
     )
-    parser.add_argument("--llm-backend", choices=["anthropic", "ollama"], default="anthropic", help="LLM backend for synthesis")
-    parser.add_argument("--llm-model", default=None, help="LLM model name (default: claude-haiku-4-5-20251001 for anthropic, llama3 for ollama)")
+    parser.add_argument("--llm-backend", choices=["anthropic", "ollama"], default="anthropic")
+    parser.add_argument("--llm-model", default=None)
     args = parser.parse_args()
 
     pipeline = QueryPipeline(
@@ -931,10 +705,6 @@ def main():
         use_reranker=args.use_reranker,
     )
     print_results(result)
-
-    # Flush Langfuse background queue before the script exits.
-    # Without this, async traces are lost when the process terminates.
-    get_client().flush()
 
 
 if __name__ == "__main__":

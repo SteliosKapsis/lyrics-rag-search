@@ -2,14 +2,22 @@
 # Excludes collection tools (lyricsgenius, langdetect, rapidfuzz)
 # and notebook tools (matplotlib, seaborn, pandas, jupyter).
 python-dotenv>=1.0.0
-sentence-transformers>=2.2.0
 faiss-cpu>=1.7.0
 rank_bm25>=0.2.2
-anthropic>=0.30.0
-openai>=1.0.0
 tiktoken>=0.5.0
 pika>=1.3.0
 requests>=2.27.0
 pydantic>=2.0.0
 streamlit>=1.30.0
 langfuse>=2.0.0
+# LangChain ecosystem
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-anthropic>=0.3.0
+langchain-openai>=0.3.0
+langchain-huggingface>=0.1.0
+# Underlying model libraries (required by langchain-huggingface / cross-encoders)
+sentence-transformers>=2.2.0
+anthropic>=0.30.0
+openai>=1.0.0

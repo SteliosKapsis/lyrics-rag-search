@@ -291,5 +291,27 @@ def main():
     )
 
 
+def load_chunks_as_documents(jsonl_path: str):
+    """
+    Load a chunks.jsonl file and return a list of LangChain Document objects.
+
+    page_content holds the raw lyric text; all other fields go into metadata
+    so downstream LangChain components (FAISS, BM25Retriever, etc.) can access
+    them without needing a separate metadata.json file.
+    """
+    from langchain_core.documents import Document
+
+    docs = []
+    with open(jsonl_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            chunk = json.loads(line)
+            metadata = {k: v for k, v in chunk.items() if k != "text"}
+            docs.append(Document(page_content=chunk["text"], metadata=metadata))
+    return docs
+
+
 if __name__ == "__main__":
     main()
