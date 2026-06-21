@@ -98,7 +98,9 @@ def on_request(ch, method, props, body):
 def connect_with_retry(url: str, retries: int = 15, delay: int = 3) -> pika.BlockingConnection:
     for attempt in range(retries):
         try:
-            return pika.BlockingConnection(pika.URLParameters(url))
+            params = pika.URLParameters(url)
+            params.heartbeat = 0  # disable heartbeats — callback blocks for 30-60s during inference
+            return pika.BlockingConnection(params)
         except Exception as e:
             if attempt < retries - 1:
                 print(f"[Worker] RabbitMQ not ready ({e}), retry {attempt + 1}/{retries} in {delay}s...")

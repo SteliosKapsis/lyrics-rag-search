@@ -21,7 +21,7 @@ services:
     env_file:
       - .env
     environment:
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/?heartbeat=0
     volumes:
       - ./data/processed:/app/data/processed:ro
       - hf-cache:/app/.cache/huggingface
@@ -37,7 +37,7 @@ services:
     env_file:
       - .env
     environment:
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/?heartbeat=0
       - OLLAMA_HOST=http://host.docker.internal:11434
     volumes:
       - ./data/processed:/app/data/processed:ro

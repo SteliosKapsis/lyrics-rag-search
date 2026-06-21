@@ -198,20 +198,6 @@ def main():
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
 
-    # --- Load pipeline ---
-    try:
-        pipeline = load_pipeline(embedding_model, backend_key, llm_model, reranker_model)
-    except FileNotFoundError as e:
-        st.error(
-            f"Pipeline data not found: {e}\n\n"
-            "Make sure you've run the embedding pipeline first:\n"
-            "```\n.venv\\Scripts\\python pipeline\\embedding.py\n```"
-        )
-        return
-    except Exception as e:
-        st.error(f"Failed to load pipeline: {e}")
-        return
-
     # --- Query input ---
     query = st.text_input(
         "What song are you looking for?",
@@ -255,6 +241,19 @@ def main():
 
     else:
         # ── Direct streaming path (local dev, no RabbitMQ) ──────────────
+        try:
+            pipeline = load_pipeline(embedding_model, backend_key, llm_model, reranker_model)
+        except FileNotFoundError as e:
+            st.error(
+                f"Pipeline data not found: {e}\n\n"
+                "Make sure you've run the embedding pipeline first:\n"
+                "```\n.venv\\Scripts\\python pipeline\\embedding.py\n```"
+            )
+            return
+        except Exception as e:
+            st.error(f"Failed to load pipeline: {e}")
+            return
+
         try:
             stream = pipeline.query_stream(
                 query,
