@@ -283,20 +283,41 @@ class QueryPipeline:
     # ------------------------------------------------------------------
 
     def _get_langfuse_handler(self, session_id: str | None):
-        """Create a per-query LangfuseCallbackHandler for automatic tracing."""
+        """Create a per-query LangfuseCallbackHandler for automatic tracing.
+
+        Returns None if Langfuse is unavailable or not configured — callers
+        must guard against None so tracing failures never kill a query.
+        """
         try:
-            from langfuse.langchain import CallbackHandler  # langfuse v3
+            try:
+                from langfuse.langchain import CallbackHandler  # langfuse v3
+            except ImportError:
+                from langfuse.callback import CallbackHandler  # langfuse v2
+                kwargs = {
+                    "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
+                    "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
+                    "host": os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+                }
+                if session_id:
+                    kwargs["session_id"] = session_id
+                return CallbackHandler(**kwargs)
             return CallbackHandler()
-        except ImportError:
-            from langfuse.callback import CallbackHandler  # langfuse v2
-            kwargs = {
-                "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
-                "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
-                "host": os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
-            }
-            if session_id:
-                kwargs["session_id"] = session_id
-            return CallbackHandler(**kwargs)
+        except Exception as e:
+            log.warning("Langfuse tracing unavailable: %s", e)
+            return None
+
+    def _flush_langfuse(self, handler) -> None:
+        if handler is None:
+            return
+        try:
+            handler.flush()
+        except AttributeError:
+            try:
+                handler.langfuse.flush()  # langfuse v3 path
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _get_reranker(self):
         if self._reranker is None:
@@ -528,7 +549,7 @@ class QueryPipeline:
         """
         langfuse_handler = self._get_langfuse_handler(session_id)
         config = {
-            "callbacks": [langfuse_handler],
+            "callbacks": [langfuse_handler] if langfuse_handler else [],
             "metadata": {
                 "embedding_model": self.embedding_model_name,
                 "llm_model": self.llm_model,
@@ -572,7 +593,7 @@ class QueryPipeline:
         )
         log.info("LLM confidence: %s, matches: %d", llm_response.confidence, len(llm_response.matches))
 
-        langfuse_handler.flush()
+        self._flush_langfuse(langfuse_handler)
         return {
             "query": query,
             "retrieval_results": grouped,
@@ -602,7 +623,7 @@ class QueryPipeline:
         and parse into LLMResponse at the end.
         """
         langfuse_handler = self._get_langfuse_handler(session_id)
-        config = {"callbacks": [langfuse_handler]}
+        config = {"callbacks": [langfuse_handler] if langfuse_handler else []}
 
         log.info(
             "Stream query: '%s' (top_k=%d, hyde=%s, hybrid=%s, reranker=%s, backend=%s)",
@@ -639,7 +660,7 @@ class QueryPipeline:
         except Exception as e:
             yield f"[Error: LLM streaming failed: {e}]"
         finally:
-            langfuse_handler.flush()
+            self._flush_langfuse(langfuse_handler)
 
 
 # ---------------------------------------------------------------------------
