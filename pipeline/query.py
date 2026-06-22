@@ -286,16 +286,21 @@ class QueryPipeline:
         """Create a per-query LangfuseCallbackHandler for automatic tracing."""
         try:
             from langfuse.langchain import CallbackHandler  # langfuse v3
+            # v3 reads LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST from env automatically
+            kwargs = {}
+            if session_id:
+                kwargs["session_id"] = session_id
+            return CallbackHandler(**kwargs)
         except ImportError:
             from langfuse.callback import CallbackHandler  # langfuse v2
-        kwargs = {
-            "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
-            "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
-            "host": os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
-        }
-        if session_id:
-            kwargs["session_id"] = session_id
-        return CallbackHandler(**kwargs)
+            kwargs = {
+                "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
+                "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
+                "host": os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+            }
+            if session_id:
+                kwargs["session_id"] = session_id
+            return CallbackHandler(**kwargs)
 
     def _get_reranker(self):
         if self._reranker is None:
