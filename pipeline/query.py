@@ -102,12 +102,15 @@ prose, like a music critic describing the song's content and atmosphere.\
 # JSON schema string injected into the streaming prompt so the LLM outputs
 # parseable JSON without requiring tool_use (which can't stream partial tokens).
 _RESPONSE_SCHEMA_STR = json.dumps(LLMResponse.model_json_schema(), indent=2)
+# {{ and }} are literal braces in LangChain prompt templates — escape the
+# JSON schema so its {…} don't get parsed as template variable placeholders.
+_RESPONSE_SCHEMA_ESCAPED = _RESPONSE_SCHEMA_STR.replace("{", "{{").replace("}", "}}")
 
 STREAMING_SYSTEM_PROMPT = (
     SYSTEM_PROMPT
     + "\n\nYou MUST respond with a single valid JSON object — no markdown, no prose "
     "outside the JSON — that strictly matches this schema:\n"
-    + _RESPONSE_SCHEMA_STR
+    + _RESPONSE_SCHEMA_ESCAPED
 )
 
 
