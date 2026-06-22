@@ -237,35 +237,120 @@ def main():
         log.error("No chunks found. Run pipeline/chunking.py first.")
         return
 
-    # Build LangChain Document objects
     use_contextual = not args.skip_contextual
-    docs = build_documents(chunks, use_contextual=use_contextual)
-    if use_contextual:
-        log.info("Sample contextual page_content:\n%s", docs[0].page_content[:300])
-    else:
-        log.info("Skipping contextual enrichment — embedding raw lyrics text")
 
-    # Create LangChain embeddings function
+    # ------------------------------------------------------------------
+    # Encode chunks using the proven SentenceTransformer / OpenAI path
+    # (same as the custom branch — FAISS.from_documents() crashes on
+    # faiss-cpu 1.14.x in certain environments, so we build the raw index
+    # manually and wrap it in a LangChain object for save_local() compat).
+    # ------------------------------------------------------------------
     if args.openai:
-        from langchain_openai import OpenAIEmbeddings
-        log.info("Using OpenAI text-embedding-3-small")
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        import openai as _openai
+        import tiktoken
+        import os
+
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            log.error("OPENAI_API_KEY not set"); return
+        client = _openai.OpenAI(api_key=api_key)
         model_label = "text-embedding-3-small"
+
+        texts_for_embed = [build_contextual_text(c) if use_contextual else c["text"] for c in chunks]
+        enc = tiktoken.encoding_for_model("text-embedding-3-small")
+        safe_texts = [enc.decode(enc.encode(t)[:8192]) for t in texts_for_embed]
+
+        log.info("Embedding %d texts via OpenAI %s...", len(safe_texts), model_label)
+        all_embs = []
+        for i in range(0, len(safe_texts), 2048):
+            batch = safe_texts[i:i + 2048]
+            resp = client.embeddings.create(model="text-embedding-3-small", input=batch)
+            all_embs.extend([r.embedding for r in resp.data])
+            log.info("  batch %d/%d done", i // 2048 + 1, (len(safe_texts) + 2047) // 2048)
+
+        import numpy as np
+        embeddings_np = np.array(all_embs, dtype=np.float32)
+        norms = np.linalg.norm(embeddings_np, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        embeddings_np /= norms
+
+        # LangChain embeddings object (used only for query-time embedding)
+        from langchain_openai import OpenAIEmbeddings
+        lc_embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+
     else:
-        from langchain_huggingface import HuggingFaceEmbeddings
-        log.info("Loading HuggingFace model: %s", args.model)
-        embeddings = HuggingFaceEmbeddings(
-            model_name=args.model,
-            encode_kwargs={"normalize_embeddings": True, "batch_size": args.batch_size},
-            show_progress=True,
-        )
+        from sentence_transformers import SentenceTransformer
+        import numpy as np
+
         model_label = args.model
+        log.info("Loading model: %s", args.model)
+        st_model = SentenceTransformer(args.model)
 
-    # Build and save LangChain FAISS vectorstore
-    from langchain_community.vectorstores import FAISS
+        texts_for_embed = [build_contextual_text(c) if use_contextual else c["text"] for c in chunks]
+        if use_contextual:
+            log.info("Sample contextual text:\n%s", texts_for_embed[0][:300])
+        else:
+            log.info("Skipping contextual enrichment — embedding raw lyrics text")
 
-    log.info("Building FAISS vectorstore from %d documents...", len(docs))
-    vectorstore = FAISS.from_documents(docs, embeddings)
+        log.info("Embedding %d texts (batch_size=%d)...", len(texts_for_embed), args.batch_size)
+        embeddings_np = st_model.encode(
+            texts_for_embed,
+            batch_size=args.batch_size,
+            show_progress_bar=True,
+            normalize_embeddings=True,
+        ).astype(np.float32)
+
+        # LangChain embeddings object (used only for query-time embedding)
+        from langchain_huggingface import HuggingFaceEmbeddings
+        lc_embeddings = HuggingFaceEmbeddings(
+            model_name=args.model,
+            encode_kwargs={"normalize_embeddings": True},
+        )
+
+    log.info("Embeddings shape: %s", embeddings_np.shape)
+
+    # ------------------------------------------------------------------
+    # Build raw FAISS index (IndexFlatIP = cosine on L2-normalised vecs)
+    # then wrap in LangChain FAISS so query.py can use FAISS.load_local()
+    # ------------------------------------------------------------------
+    import faiss
+    import uuid
+    from langchain_community.vectorstores import FAISS as LCFaiss
+    from langchain_community.docstore.in_memory import InMemoryDocstore
+    from langchain_core.documents import Document
+
+    dim = embeddings_np.shape[1]
+    log.info("Building FAISS IndexFlatIP (%d dims) over %d vectors...", dim, len(embeddings_np))
+    index = faiss.IndexFlatIP(dim)
+    index.add(embeddings_np)
+    log.info("FAISS index built: %d vectors", index.ntotal)
+
+    # Build docstore: page_content = original lyrics text (for display);
+    # contextual text was only needed at embed time, not stored here.
+    uuids = [str(uuid.uuid4()) for _ in chunks]
+    index_to_docstore_id = dict(enumerate(uuids))
+    docstore = InMemoryDocstore({
+        uid: Document(
+            page_content=c["text"],
+            metadata={
+                "original_text": c["text"],
+                "title": c["title"],
+                "artist": c["artist"],
+                "album": c.get("album"),
+                "release_date": c.get("release_date"),
+                "chunk_index": c["chunk_index"],
+                "total_chunks": c["total_chunks"],
+            },
+        )
+        for uid, c in zip(uuids, chunks)
+    })
+
+    vectorstore = LCFaiss(
+        embedding_function=lc_embeddings.embed_query,
+        index=index,
+        docstore=docstore,
+        index_to_docstore_id=index_to_docstore_id,
+    )
 
     Path(args.index_output).mkdir(parents=True, exist_ok=True)
     vectorstore.save_local(args.index_output)
