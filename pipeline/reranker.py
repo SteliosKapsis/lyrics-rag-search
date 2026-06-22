@@ -46,7 +46,11 @@ def build_reranker(
         top_n:      How many top documents to keep after reranking.
     """
     from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-    from langchain.retrievers.document_compressors import CrossEncoderReranker
+    try:
+        # langchain >= 0.3: moved to langchain_community
+        from langchain_community.document_compressors import CrossEncoderReranker
+    except ImportError:
+        from langchain.retrievers.document_compressors import CrossEncoderReranker
 
     log.info("Loading cross-encoder model: %s", model_name)
     cross_encoder = HuggingFaceCrossEncoder(model_name=model_name)
