@@ -286,11 +286,7 @@ class QueryPipeline:
         """Create a per-query LangfuseCallbackHandler for automatic tracing."""
         try:
             from langfuse.langchain import CallbackHandler  # langfuse v3
-            # v3 reads LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST from env automatically
-            kwargs = {}
-            if session_id:
-                kwargs["session_id"] = session_id
-            return CallbackHandler(**kwargs)
+            return CallbackHandler()
         except ImportError:
             from langfuse.callback import CallbackHandler  # langfuse v2
             kwargs = {
