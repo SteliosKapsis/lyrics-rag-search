@@ -284,7 +284,10 @@ class QueryPipeline:
 
     def _get_langfuse_handler(self, session_id: str | None):
         """Create a per-query LangfuseCallbackHandler for automatic tracing."""
-        from langfuse.callback import CallbackHandler
+        try:
+            from langfuse.langchain import CallbackHandler  # langfuse v3
+        except ImportError:
+            from langfuse.callback import CallbackHandler  # langfuse v2
         kwargs = {
             "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
             "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
