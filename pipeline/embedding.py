@@ -231,19 +231,53 @@ def main():
         if using_default_bm25:
             args.bm25_output = _add_suffix(args.bm25_output, "_noctx")
 
-    # Load chunks
+    import gc
+    import numpy as np
+
     chunks = load_chunks(args.input)
     if not chunks:
         log.error("No chunks found. Run pipeline/chunking.py first.")
         return
 
     use_contextual = not args.skip_contextual
+    n_chunks = len(chunks)
 
     # ------------------------------------------------------------------
-    # Encode chunks using the proven SentenceTransformer / OpenAI path
-    # (same as the custom branch — FAISS.from_documents() crashes on
-    # faiss-cpu 1.14.x in certain environments, so we build the raw index
-    # manually and wrap it in a LangChain object for save_local() compat).
+    # Phase 1 — extract everything needed from chunks into small structures,
+    # then free the chunk list before any large allocations happen.
+    # This keeps chunks (~350 MB of dicts) out of RAM during encoding,
+    # BM25 build, and FAISS build, which are the high-watermark steps.
+    # ------------------------------------------------------------------
+    log.info("Extracting texts and docstore records from %d chunks...", n_chunks)
+
+    # texts to embed (contextual = header + lyrics, or raw)
+    texts_for_embed = [
+        build_contextual_text(c) if use_contextual else c["text"]
+        for c in chunks
+    ]
+    if use_contextual:
+        log.info("Sample contextual text:\n%s", texts_for_embed[0][:300])
+
+    # raw text references for BM25 (just pointers — strings live in docstore_data)
+    bm25_texts = [c["text"] for c in chunks]
+
+    # lightweight tuples for docstore construction (avoids keeping full dicts)
+    docstore_data = [
+        (c["text"], c["title"], c["artist"],
+         c.get("album"), c.get("release_date"),
+         c["chunk_index"], c["total_chunks"])
+        for c in chunks
+    ]
+
+    # metadata.json needs chunks — write to disk now before freeing
+    save_metadata(chunks, args.metadata_output)
+
+    del chunks
+    gc.collect()
+    log.info("Chunks freed from memory")
+
+    # ------------------------------------------------------------------
+    # Phase 2 — encode texts into embeddings
     # ------------------------------------------------------------------
     if args.openai:
         import openai as _openai
@@ -256,9 +290,10 @@ def main():
         client = _openai.OpenAI(api_key=api_key)
         model_label = "text-embedding-3-small"
 
-        texts_for_embed = [build_contextual_text(c) if use_contextual else c["text"] for c in chunks]
         enc = tiktoken.encoding_for_model("text-embedding-3-small")
         safe_texts = [enc.decode(enc.encode(t)[:8192]) for t in texts_for_embed]
+        del texts_for_embed
+        gc.collect()
 
         log.info("Embedding %d texts via OpenAI %s...", len(safe_texts), model_label)
         all_embs = []
@@ -267,26 +302,21 @@ def main():
             resp = client.embeddings.create(model="text-embedding-3-small", input=batch)
             all_embs.extend([r.embedding for r in resp.data])
             log.info("  batch %d/%d done", i // 2048 + 1, (len(safe_texts) + 2047) // 2048)
+        del safe_texts
+        gc.collect()
 
-        import numpy as np
         embeddings_np = np.array(all_embs, dtype=np.float32)
+        del all_embs
         norms = np.linalg.norm(embeddings_np, axis=1, keepdims=True)
         norms[norms == 0] = 1
         embeddings_np /= norms
 
     else:
         from sentence_transformers import SentenceTransformer
-        import numpy as np
 
         model_label = args.model
         log.info("Loading model: %s", args.model)
         st_model = SentenceTransformer(args.model)
-
-        texts_for_embed = [build_contextual_text(c) if use_contextual else c["text"] for c in chunks]
-        if use_contextual:
-            log.info("Sample contextual text:\n%s", texts_for_embed[0][:300])
-        else:
-            log.info("Skipping contextual enrichment — embedding raw lyrics text")
 
         log.info("Embedding %d texts (batch_size=%d)...", len(texts_for_embed), args.batch_size)
         embeddings_np = st_model.encode(
@@ -296,24 +326,16 @@ def main():
             normalize_embeddings=True,
         ).astype(np.float32)
 
+        del texts_for_embed, st_model
+        gc.collect()
+        log.info("Freed text buffers and model from memory")
 
     log.info("Embeddings shape: %s", embeddings_np.shape)
     dim = embeddings_np.shape[1]
-    n_vecs = len(embeddings_np)
-    import gc
 
     # ------------------------------------------------------------------
-    # Step 1: free the large text list and model weights now that we have
-    # the embeddings — every MB freed here helps avoid OOM below.
-    # ------------------------------------------------------------------
-    del texts_for_embed
-    if not args.openai:
-        del st_model
-    gc.collect()
-    log.info("Freed text buffers and model from memory")
-
-    # ------------------------------------------------------------------
-    # Step 2: cache embeddings to disk so a later OOM doesn't cost 3 hrs.
+    # Phase 3 — cache embeddings to disk immediately.
+    # If anything below OOMs, re-run is instant (skip re-encoding).
     # ------------------------------------------------------------------
     Path(args.index_output).mkdir(parents=True, exist_ok=True)
     cache_path = Path(args.index_output) / "_embeddings_cache.npy"
@@ -321,8 +343,17 @@ def main():
     log.info("Embeddings cached to %s", cache_path)
 
     # ------------------------------------------------------------------
-    # Step 3: build the FAISS index, then immediately free the numpy array
-    # before touching the docstore (avoid holding both ~270 MB buffers).
+    # Phase 4 — BM25 index (peak: embeddings_np + tokenized + doc_freqs).
+    # Build and save before FAISS so both big C buffers never overlap.
+    # ------------------------------------------------------------------
+    bm25 = build_bm25_index(bm25_texts)
+    save_bm25_index(bm25, args.bm25_output)
+    del bm25_texts, bm25
+    gc.collect()
+    log.info("BM25 freed from memory")
+
+    # ------------------------------------------------------------------
+    # Phase 5 — FAISS index, then free the numpy array before docstore.
     # ------------------------------------------------------------------
     import faiss
     import uuid
@@ -330,7 +361,7 @@ def main():
     from langchain_community.docstore.in_memory import InMemoryDocstore
     from langchain_core.documents import Document
 
-    log.info("Building FAISS IndexFlatIP (%d dims) over %d vectors...", dim, n_vecs)
+    log.info("Building FAISS IndexFlatIP (%d dims) over %d vectors...", dim, n_chunks)
     index = faiss.IndexFlatIP(dim)
     index.add(embeddings_np)
     log.info("FAISS index built: %d vectors", index.ntotal)
@@ -339,45 +370,32 @@ def main():
     log.info("Freed embeddings array from memory")
 
     # ------------------------------------------------------------------
-    # Step 4: save metadata and BM25 while chunks are still in memory,
-    # then build the docstore and free chunks before saving vectorstore.
+    # Phase 6 — docstore from lightweight tuples, then save everything.
     # ------------------------------------------------------------------
-    save_metadata(chunks, args.metadata_output)
-
-    bm25_texts = [c["text"] for c in chunks]
-    bm25 = build_bm25_index(bm25_texts)
-    save_bm25_index(bm25, args.bm25_output)
-    del bm25_texts, bm25
-    gc.collect()
-
-    log.info("Building docstore for %d chunks...", len(chunks))
-    uuids = [str(uuid.uuid4()) for _ in chunks]
+    log.info("Building docstore for %d chunks...", n_chunks)
+    uuids = [str(uuid.uuid4()) for _ in docstore_data]
     index_to_docstore_id = dict(enumerate(uuids))
-    # page_content IS the original text — don't duplicate it in metadata.
-    # query.py's _doc_to_chunk falls back to doc.page_content when
-    # metadata["original_text"] is absent, so no change needed there.
     docstore = InMemoryDocstore({
         uid: Document(
-            page_content=c["text"],
+            page_content=text,
             metadata={
-                "title": c["title"],
-                "artist": c["artist"],
-                "album": c.get("album"),
-                "release_date": c.get("release_date"),
-                "chunk_index": c["chunk_index"],
-                "total_chunks": c["total_chunks"],
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "release_date": release_date,
+                "chunk_index": chunk_index,
+                "total_chunks": total_chunks,
             },
         )
-        for uid, c in zip(uuids, chunks)
+        for uid, (text, title, artist, album, release_date, chunk_index, total_chunks)
+        in zip(uuids, docstore_data)
     })
-    n_chunks = len(chunks)
-    del chunks
+    del docstore_data
     gc.collect()
-    log.info("Docstore built, chunks freed from memory")
+    log.info("Docstore built")
 
-    # embedding_function is not serialised by save_local() — pass a dummy
-    # so we don't load a second copy of the model just for the constructor.
-    # query.py passes the real Embeddings object to FAISS.load_local().
+    # embedding_function is not serialised by save_local() — dummy is fine.
+    # query.py supplies the real Embeddings object to FAISS.load_local().
     vectorstore = LCFaiss(
         embedding_function=lambda q: [],
         index=index,
@@ -388,7 +406,7 @@ def main():
     vectorstore.save_local(args.index_output)
     log.info("FAISS vectorstore saved to %s/", args.index_output)
 
-    cache_path.unlink(missing_ok=True)  # clean up temp cache
+    cache_path.unlink(missing_ok=True)
 
     log.info(
         "Done. %d chunks embedded with '%s'. "
