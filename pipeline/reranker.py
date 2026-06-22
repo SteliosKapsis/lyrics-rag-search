@@ -47,10 +47,13 @@ def build_reranker(
     """
     from langchain_community.cross_encoders import HuggingFaceCrossEncoder
     try:
-        # langchain >= 0.3: moved to langchain_community
-        from langchain_community.document_compressors import CrossEncoderReranker
+        # langchain 1.x: moved to langchain_classic
+        from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
     except ImportError:
-        from langchain.retrievers.document_compressors import CrossEncoderReranker
+        try:
+            from langchain_community.document_compressors import CrossEncoderReranker
+        except ImportError:
+            from langchain.retrievers.document_compressors import CrossEncoderReranker
 
     log.info("Loading cross-encoder model: %s", model_name)
     cross_encoder = HuggingFaceCrossEncoder(model_name=model_name)
