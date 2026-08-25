@@ -78,6 +78,7 @@ def query(
     use_reranker: bool = True,
     rrf_k: int = 60,
     fetch_k_multiplier: int = 5,
+    session_id: str | None = None,
 ) -> dict
 ```
 
@@ -90,6 +91,7 @@ def query(
 | `use_reranker` | True | Re-score candidates with cross-encoder |
 | `rrf_k` | 60 | RRF fusion constant. Lower = more weight to top-ranked items |
 | `fetch_k_multiplier` | 5 | Candidate pool multiplier for re-ranking (`fetch_k = top_k × multiplier`) |
+| `session_id` | None | Optional identifier correlating this call to a session for Langfuse tracing |
 
 **Returns**:
 ```python
@@ -137,6 +139,7 @@ def query_stream(
     use_reranker: bool = True,
     rrf_k: int = 60,
     fetch_k_multiplier: int = 5,
+    session_id: str | None = None,
 ) -> Generator[dict | str, None, None]
 ```
 

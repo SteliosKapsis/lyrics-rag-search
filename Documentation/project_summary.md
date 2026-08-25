@@ -12,11 +12,11 @@ The corpus originates from the Billboard Hot 100 chart (1958-2021), comprising 2
 
 The retrieval pipeline supports multiple interchangeable components, enabling systematic experimentation:
 
-- **Embedding & Indexing**: Chunks are embedded using sentence-transformer models or cloud APIs and indexed with FAISS (exact inner-product search). A key design choice is *contextual embedding*: each chunk is prepended with a metadata header (title, artist, album, section type) before encoding, enriching the vector representation with song identity. Three embedding options are supported: `all-MiniLM-L6-v2` (384d), `BAAI/bge-small-en-v1.5` (384d), and OpenAI `text-embedding-3-small` (1536d, cloud API). Non-contextual variants can be built with `--skip-contextual` for ablation studies. A parallel BM25 sparse index enables keyword-based retrieval.
+- **Embedding & Indexing**: Chunks are embedded using sentence-transformer models or cloud APIs and indexed with FAISS (exact inner-product search). A key design choice is *contextual embedding*: each chunk is prepended with a metadata header (title, artist, album, section type) before encoding, enriching the vector representation with song identity. The embedding pipeline's `--model` flag supports `all-MiniLM-L6-v2` (384d), `BAAI/bge-small-en-v1.5` (384d), `all-mpnet-base-v2` (768d), and in principle any sentence-transformers model name, plus OpenAI `text-embedding-3-small` (1536d, cloud API) via `--openai`; the Streamlit UI exposes the first three of these (MiniLM, bge, and OpenAI) at query time. Non-contextual variants can be built with `--skip-contextual` for ablation studies. A parallel BM25 sparse index enables keyword-based retrieval.
 
 - **Retrieval Strategies**: The pipeline implements three optional retrieval techniques evaluated in a full combinatorial grid (2^3 = 8 configurations): (1) hybrid retrieval combining FAISS and BM25 via Reciprocal Rank Fusion (RRF), (2) HyDE (Hypothetical Document Embeddings), which uses an LLM to generate synthetic lyrics from the query before retrieval, and (3) cross-encoder re-ranking to refine the initial top-k results. Three re-ranker models are supported: `ms-marco-MiniLM-L-6-v2`, `ms-marco-MiniLM-L-12-v2`, and `BAAI/bge-reranker-base`. Each technique is tested both in isolation against the baseline and in every combination, yielding 8 configurations per embedding model. A full combinatorial sweep (104 runs) across all tunable parameters and re-ranker models identifies the global optimum. Additionally, three parameter sensitivity studies sweep top-k, RRF fusion constant, and re-ranker candidate pool size.
 
-- **LLM Synthesis**: Retrieved chunks are passed to an LLM (Anthropic Claude 3.5 Haiku or local Llama 3 via Ollama) that produces a structured JSON response containing song matches with titles, artists, confidence scores, and textual explanations. Structured output is enforced through Pydantic schemas and the LLM's tool-use capabilities.
+- **LLM Synthesis**: Retrieved chunks are passed to an LLM (Anthropic Claude Haiku 4.5 or local Llama 3 via Ollama) that produces a structured JSON response containing song matches with titles, artists, and textual explanations, along with a single overall confidence rating (high/medium/low) for the response. Structured output is enforced through Pydantic schemas — via tool-use for the Anthropic backend, and via JSON-schema-constrained generation for the Ollama backend.
 
 - **Frontend**: A Streamlit web application provides an interactive interface with real-time streaming, configurable retrieval parameters, and result cards with similarity score breakdowns and YouTube search links.
 
@@ -105,7 +105,7 @@ The techniques that underperformed in lyrics search are well-established in othe
 
 ## Technology Stack
 
-Python 3.11, FAISS, sentence-transformers, rank-bm25, Anthropic API (Claude 3.5 Haiku), Ollama (Llama 3), Streamlit, Pydantic, DeepEval, Docker. The full codebase is organized into modular pipeline stages (`pipeline/`), a web frontend (`app/`), evaluation notebooks (`notebooks/`), and phase-specific documentation (`documentation/`).
+Python 3.11, FAISS, sentence-transformers, rank-bm25, Anthropic API (Claude Haiku 4.5), Ollama (Llama 3), Streamlit, Pydantic, Langfuse (observability/tracing), DeepEval, Docker. The full codebase is organized into modular pipeline stages (`pipeline/`), a web frontend (`app/`), evaluation notebooks (`notebooks/`), and phase-specific documentation (`documentation/`).
 
 ## Current Status
 

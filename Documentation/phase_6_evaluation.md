@@ -83,7 +83,7 @@ The full combinatorial grid ensures no technique interaction is missed. Earlier 
 
 Each embedding model requires its own FAISS index. The notebook auto-detects which indices are available and runs the grid on those.
 
-**Key result:** Baseline + Re-ranker (0.653 MRR with MiniLM) is the best configuration at default k=5, surpassing all other combinations including those with Hybrid and HyDE.
+**Key result:** Hybrid + Re-ranker (0.698 MRR with MiniLM) is the best configuration at default k=5, edging out Baseline + Re-ranker (0.674 MRR) and surpassing all other combinations including those with HyDE.
 
 ### Experiment 2: Top-k Sensitivity (Section 3.2)
 
@@ -91,12 +91,12 @@ Sweeps top_k = {3, 5, 10, 20} for Baseline and Baseline + Re-ranker to measure h
 
 | top_k | Baseline MRR | Baseline HR | + Re-ranker MRR | + Re-ranker HR |
 |-------|-------------|-------------|-----------------|----------------|
-| 3     | 0.540       | 0.560       | 0.580           | 0.600          |
-| 5     | 0.563       | 0.640       | 0.653           | 0.680          |
-| 10    | 0.573       | 0.680       | 0.687           | 0.760          |
-| **20**| **0.585**   | **0.760**   | **0.767**       | **0.880**      |
+| 3     | 0.556       | 0.587       | 0.593           | 0.600          |
+| 5     | 0.571       | 0.627       | 0.674           | 0.707          |
+| 10    | 0.586       | 0.693       | 0.729           | 0.773          |
+| **20**| **0.596**   | **0.773**   | **0.762**       | **0.813**      |
 
-The re-ranker's benefit scales with k: at k=20, it achieves **0.767 MRR and 88% Hit Rate** — the highest scores in the entire evaluation. The re-ranker advantage grows from +0.040 MRR at k=3 to +0.182 at k=20, demonstrating that giving the cross-encoder more candidates consistently improves performance.
+The re-ranker's benefit scales with k: at k=20, it achieves **0.762 MRR and 81.3% Hit Rate** — the highest result in this experiment (Experiment 8's combined parameter sweep achieves higher results still — see Section 7.5). The re-ranker advantage grows from +0.037 MRR at k=3 to +0.166 at k=20, demonstrating that giving the cross-encoder more candidates consistently improves performance.
 
 ### Experiment 3: RRF Parameter Tuning (Section 3.3)
 
@@ -145,7 +145,7 @@ Qualitative (not metric-based) comparison of Claude Haiku vs. Llama 3 on 5 repre
 
 ### Experiment 7: LLM-as-a-Judge (RAG Quality Evaluation)
 
-Goes beyond retrieval metrics to assess the full RAG pipeline (retrieval + generation) using the DeepEval framework with **two independent judges**: Claude Haiku (Anthropic) and GPT-4o-mini (OpenAI).
+Goes beyond retrieval metrics to assess the full RAG pipeline (retrieval + generation) using the DeepEval framework with **two independent judges**: Claude Sonnet (Anthropic) and GPT-4o-mini (OpenAI).
 
 **Metrics:**
 
@@ -157,28 +157,28 @@ Goes beyond retrieval metrics to assess the full RAG pipeline (retrieval + gener
 | Context Recall | Whether the retrieved context covers all information needed to answer | Identifies cases where important chunks were missed by retrieval |
 
 **Setup:**
-- Uses 5 representative queries (one per query type from the test set)
-- **Two judges run independently**: Claude Haiku (`claude-haiku-4-5-20251001`) via `AnthropicModel` and GPT-4o-mini via `GPTModel` — both using DeepEval's built-in model wrappers
+- Uses 10 representative queries selected by type: 3 direct lyric, 3 semantic/descriptive, 2 partial recall, 2 ambiguous
+- **Two judges run independently**: Claude Sonnet (`claude-sonnet-4-6`) via `AnthropicModel` and GPT-4o-mini via `GPTModel` — both using DeepEval's built-in model wrappers
 - Both judges read API keys from `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`)
 - Each query is run through the best-performing pipeline configuration from Experiment 1
 - Results displayed per judge, plus an inter-judge agreement table showing scores and delta per metric
 
-**Why two judges:** Claude Haiku is also the generation model, so using it as the sole judge introduces self-evaluation bias. GPT-4o-mini provides an independent assessment. Agreement between judges strengthens result credibility; disagreement surfaces where evaluation is subjective.
+**Why two judges:** The Anthropic judge (Claude Sonnet) is a different model from the pipeline's generation model (Claude Haiku, `claude-haiku-4-5-20251001`), so there's no shared-model self-evaluation risk to begin with. Running a second judge from another vendor (GPT-4o-mini) still adds value: agreement between Claude Sonnet and GPT-4o-mini strengthens result credibility, while disagreement surfaces metrics where evaluation is more subjective or vendor-dependent.
 
 **Why this matters for the thesis:** Retrieval metrics (Precision@k, MRR) only tell you whether the right chunks were found. LLM-as-judge metrics tell you whether the final answer is faithful, relevant, and well-grounded — completing the evaluation picture from retrieval quality through to generation quality.
 
 ## Pipeline Parameters
 
-The evaluation notebook exercises these configurable parameters of the `QueryPipeline`:
+The evaluation notebook exercises these configurable parameters of the `QueryPipeline`. Defaults below are `QueryPipeline.query()`'s actual defaults (the ones used by the deployed app and worker) — not the CLI script's defaults, which differ (`--top-k` defaults to 5 and `--use-reranker` is off unless passed):
 
 | Parameter | Default | Swept Values | Description |
 |-----------|---------|-------------|-------------|
-| `top_k` | 5 | 3, 5, 10, 20 | Number of song results to return |
+| `top_k` | 20 | 3, 5, 10, 20 | Number of song results to return |
 | `use_hybrid` | True | True/False | Combine FAISS dense + BM25 sparse via RRF |
 | `use_hyde` | False | True/False | Generate hypothetical lyrics before retrieval |
-| `use_reranker` | False | True/False | Re-score top candidates with cross-encoder |
+| `use_reranker` | True | True/False | Re-score top candidates with cross-encoder |
 | `rrf_k` | 60 | 20, 40, 60, 80, 100 | RRF fusion constant (lower = more weight to top-ranked method) |
-| `fetch_k_multiplier` | 3 | 2, 3, 5, 8 | Candidate pool size for re-ranking (fetch_k = top_k × multiplier) |
+| `fetch_k_multiplier` | 5 | 2, 3, 5, 8 | Candidate pool size for re-ranking (fetch_k = top_k × multiplier) |
 | `reranker_model` | `ms-marco-MiniLM-L-6-v2` | L-6-v2, L-12-v2, bge-reranker-base | Cross-encoder model for re-ranking |
 
 ## Visualizations
@@ -192,7 +192,7 @@ The evaluation notebook exercises these configurable parameters of the `QueryPip
 | RRF tuning | `notebooks/rrf_tuning.png` | Line chart of MRR vs. rrf_k with Baseline MRR reference line |
 | Fetch-k multiplier | `notebooks/fetchk_multiplier.png` | Line chart of MRR/HR vs. multiplier for Baseline+RR and Hybrid+RR |
 | Chunking sweep table | `notebooks/chunking_sweep.png` | Rendered table of chunking parameter results |
-| LLM-as-judge scores | `notebooks/llm_judge_scores.png` | Side-by-side heatmaps of all four DeepEval metrics for Claude Haiku and GPT-4o-mini judges |
+| LLM-as-judge scores | `notebooks/llm_judge_scores.png` | Side-by-side heatmaps of all four DeepEval metrics for Claude Sonnet and GPT-4o-mini judges |
 | RAG vs. Pure LLM | `notebooks/rag_vs_llm_baseline.png` | Overall and per-query-type Hit Rate across 5 conditions: Claude (no ctx), GPT (no ctx), RAG retrieval only, RAG+Claude, RAG+GPT |
 | Per-query-type breakdown | `notebooks/per_query_type_breakdown.png` | MRR and Hit Rate grouped bar charts by query type |
 | Latency profile | `notebooks/latency_profile.png` | Stacked bar chart of per-stage latency breakdown |
@@ -208,7 +208,7 @@ The final section produces:
 
 ## Key Findings
 
-1. **FAISS + Cross-encoder re-ranking is the optimal pipeline.** Baseline + Re-ranker (0.653 MRR at k=5, 0.767 MRR at k=20) is the best configuration. The re-ranker was only discovered to be effective in isolation after expanding the grid from 6 to 8 combinations.
+1. **Cross-encoder re-ranking is the single most impactful technique.** At default k=5, Hybrid + Re-ranker (0.698 MRR) is the best configuration in the technique grid, ahead of Baseline + Re-ranker (0.674 MRR). Re-ranking alone also scales well with k — Baseline + Re-ranker reaches 0.762 MRR at k=20 in the top-k sweep. The re-ranker was only discovered to be effective in isolation after expanding the grid from 6 to 8 combinations. (Experiment 8's combined parameter sweep later finds still higher results — see Section 7.5.)
 
 2. **The re-ranker's benefit scales with candidate pool size.** Whether increased via higher top-k (+0.182 MRR at k=20) or higher fetch multiplier (+0.040 MRR at 8x), giving the cross-encoder more candidates consistently improves performance.
 
@@ -229,7 +229,7 @@ The final section produces:
 - **Separate LLM comparison section** — LLM output quality is subjective and not reducible to a single metric, so it's evaluated qualitatively in its own section.
 - **Auto-detection of available indices** — the notebook doesn't fail if optional indices (mpnet, chunking variants) aren't built. It runs on whatever is available and prints instructions for building missing ones.
 - **Plots saved to disk** — all visualizations are saved as PNG files for easy copy-paste into a thesis document.
-- **Parameter sweeps use best-performing base configuration** — top-k and fetch-k sweeps use the best configuration from the technique grid (Baseline + Re-ranker) as the starting point, isolating the effect of each parameter.
+- **Parameter sweeps build on the technique grid's core configurations** — the top-k sweep (3.2) tests Baseline and + Re-ranker; the fetch-k sweep (3.4) tests Baseline + Re-ranker and Hybrid + Re-ranker. This isolates the effect of each parameter without re-sweeping the full 8-configuration grid every time.
 
 ### Experiment 8: Combined Parameter & Re-ranker Sweep (Section 7.5)
 
@@ -305,17 +305,29 @@ Tests whether MRR improvements are statistically significant using two methods:
 
 **Why it matters:** With 75 test queries, observed MRR differences could still be noise. P-values and confidence intervals preempt the "is this improvement significant?" question from thesis reviewers.
 
-## Future Experiments
+### Experiment 13: Contextual Embedding Ablation (Section 7.6)
 
-The contextual embedding ablation requires building a non-contextual index first (Phase 3 `--skip-contextual`) and has not yet been run.
-
-### Contextual Embedding Ablation
-
-Requires building a non-contextual index first:
+Compares retrieval quality between **contextual** (metadata header prepended before embedding) and **non-contextual** (raw lyrics only) embeddings, using a non-contextual index built via:
 ```bash
 .venv\Scripts\python pipeline\embedding.py --skip-contextual
 ```
+producing `faiss_noctx.index`, `metadata_noctx.json`, and `bm25_noctx.pkl`. The full technique grid (Baseline, + Re-ranker, + Hybrid, + Hybrid + Re-ranker) was run on both the contextual and non-contextual indices for all-MiniLM-L6-v2 and bge-small-en-v1.5 to isolate the contribution of contextual embeddings.
 
-Then re-run the full 8-configuration technique grid on the non-contextual index (`faiss_noctx.index`, `metadata_noctx.json`, `bm25_noctx.pkl`). Compare contextual vs. non-contextual MRR for each configuration. The delta directly measures the isolated contribution of contextual embeddings. Anthropic reported 35% reduction in retrieval failure; the actual gain in this lyrics domain may differ.
+**Results (MRR at k=5):**
 
-**Data integrity:** Both contextual and non-contextual indices must be built from the same `chunks.jsonl`. Do not re-run the chunking or ingestion pipeline between builds. Verify with `certutil -hashfile data\processed\chunks.jsonl MD5` before and after — same hash guarantees the only variable is the metadata header. The embedding script reads every chunk in file order with no filtering or randomness.
+| Embedding Model | Technique | Contextual | Non-contextual | Delta |
+|-----------------|-----------|-----------|-----------------|-------|
+| all-MiniLM-L6-v2 | Baseline (FAISS only) | 0.571 | 0.471 | +0.100 |
+| all-MiniLM-L6-v2 | + Re-ranker | 0.674 | 0.598 | +0.077 |
+| all-MiniLM-L6-v2 | + Hybrid | 0.590 | 0.513 | +0.077 |
+| all-MiniLM-L6-v2 | + Hybrid + Re-ranker | 0.698 | 0.684 | +0.013 |
+| bge-small-en-v1.5 | Baseline (FAISS only) | 0.476 | 0.558 | -0.082 |
+| bge-small-en-v1.5 | + Re-ranker | 0.580 | 0.683 | -0.103 |
+| bge-small-en-v1.5 | + Hybrid | 0.549 | 0.556 | -0.007 |
+| bge-small-en-v1.5 | + Hybrid + Re-ranker | 0.709 | 0.653 | +0.056 |
+
+Average MRR delta (contextual − non-contextual): **+0.067** for all-MiniLM-L6-v2 — contextual embeddings help consistently, most strongly at the unassisted baseline. For bge-small-en-v1.5, the average delta is **-0.034**: contextual embeddings actually *hurt* the Baseline and + Re-ranker configurations, and only pull ahead once combined with Hybrid + Re-ranker. Unlike Anthropic's reported 35% reduction in retrieval failure, the benefit of contextual embeddings in this lyrics domain is model- and configuration-dependent rather than a uniform win.
+
+**Data integrity:** Both indices were built from the same `chunks.jsonl` without re-running chunking or ingestion between builds, verified via `certutil -hashfile data\processed\chunks.jsonl MD5` before and after (identical hash confirms the metadata header was the only variable). The embedding script reads every chunk in file order with no filtering or randomness.
+
+Plot saved to `notebooks/contextual_ablation.png`.

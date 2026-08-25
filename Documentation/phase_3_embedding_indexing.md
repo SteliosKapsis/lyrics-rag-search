@@ -22,6 +22,9 @@ Embeds lyric chunks into dense vectors using sentence-transformers and stores th
 
 # Build a non-contextual index (raw lyrics, no metadata header):
 .venv\Scripts\python pipeline\embedding.py --skip-contextual
+
+# Use OpenAI's text-embedding-3-small instead of a local model (requires OPENAI_API_KEY in .env):
+.venv\Scripts\python pipeline\embedding.py --openai
 ```
 
 ## Input
@@ -60,6 +63,9 @@ The `text` field is included in metadata so the query pipeline (Phase 4) can dis
 - `sentence-transformers>=2.2.0` — embedding model loading and inference
 - `faiss-cpu>=1.7.0` — vector similarity search index
 - `rank_bm25>=0.2.2` — BM25Okapi sparse keyword retrieval
+- `openai>=1.0.0` — OpenAI Embeddings API client, used by `--openai`
+- `tiktoken>=0.5.0` — tokenizes text to enforce the OpenAI API's per-request token limit before embedding
+- `python-dotenv>=1.0.0` — loads `OPENAI_API_KEY` from `.env` for `--openai`
 
 ## Contextual Embeddings
 
@@ -76,9 +82,7 @@ Anthropic reported:
 - 35% reduction in retrieval failure with contextual embeddings alone
 - 67% reduction when combined with BM25 + reranking (both already in our pipeline)
 
-**Implementation detail:** metadata stores two text fields:
-- `text` — original chunk text (used for display in the UI and as LLM context)
-- `text_for_embedding` — contextualized text (used only at embedding time)
+**Implementation detail:** metadata stores only the original, non-contextualized chunk text under `text` (used for display in the UI and as LLM context). The contextualized text built by `build_contextual_text()` is used solely at embedding time and is **not** persisted — since it can be reconstructed from `text` + the other metadata fields, storing it separately would just be redundant.
 
 The BM25 index uses the **original** text, not the contextualized text, because BM25 should match on actual lyrics keywords, not the metadata prefix.
 
@@ -114,12 +118,18 @@ Same hash = same data = valid ablation. Both runs read every chunk in file order
 
 Same 384 dimensions and comparable speed as MiniLM, but scores ~3 points higher on the MTEB benchmark. A zero-effort quality upgrade — the FAISS index structure is identical.
 
-### Future comparison: OpenAI `text-embedding-3-small`
+### Alternate backend: OpenAI `text-embedding-3-small` (`--openai`)
 
-- Cloud-based, costs per token
-- To be included in Phase 6 evaluation as a local vs. cloud comparison data point for the thesis
+Already implemented via `embed_chunks_openai()` and wired up as the `--openai` CLI flag — this is a working alternative to the local sentence-transformers models, not a future addition.
 
-The model name is configurable via `--model` so Phase 6 can sweep across models.
+- Cloud-based, costs per token; requires `OPENAI_API_KEY` in `.env`
+- Produces 1536-dimensional embeddings (vs. 384 for MiniLM/BGE, 768 for mpnet)
+- Text is tokenized with `tiktoken` and truncated to 8192 tokens per input before being sent to the API, to stay under the model's context limit
+- Requests are batched (default batch size 2048 texts per call)
+- Resulting vectors are L2-normalized in the same way as the local models, so they remain compatible with `IndexFlatIP` / cosine similarity
+- Outputs are automatically suffixed `_openai` (`faiss_openai.index`, `metadata_openai.json`, `bm25_openai.pkl`), giving Phase 6 a ready-made local vs. cloud comparison data point for the thesis
+
+The model name for local embeddings is configurable via `--model` so Phase 6 can sweep across models; `--openai` provides the cloud counterpart alongside that sweep.
 
 ## FAISS Index Design
 
@@ -151,6 +161,7 @@ The model name is configurable via `--model` so Phase 6 can sweep across models.
 | `--bm25-output` | `data/processed/bm25.pkl` | Output BM25 index path |
 | `--skip-contextual` | False | Skip metadata header enrichment; embed raw lyrics only. Outputs are auto-suffixed with `_noctx` |
 | `--model` (non-default) | — | Using any model other than `all-MiniLM-L6-v2` automatically applies a model suffix (`_bge`, `_mpnet`). Combined with `--skip-contextual` produces e.g. `faiss_bge_noctx.index` |
+| `--openai` | False | Switch the embedding backend from the local sentence-transformers model to OpenAI's `text-embedding-3-small` API (1536 dimensions instead of 384). Requires `OPENAI_API_KEY` in `.env`. Outputs are auto-suffixed with `_openai` |
 
 ### Automatic Output Suffix Logic
 

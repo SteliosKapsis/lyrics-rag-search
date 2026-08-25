@@ -62,17 +62,14 @@ Genius injects ad text `"You might also like"` between song sections. Matched ex
 
 ### 5. Normalize section headers
 
-Section headers come in inconsistent formats from Genius:
+Section headers come in inconsistent formats from Genius. Each is normalized to consistent title case:
 
-```
-[verse 1], [VERSE 1], [Verse 1: artist name], [CHORUS]
-```
-
-Normalized to consistent title case:
-
-```
-[Verse 1], [Chorus], [Verse 1: Artist Name], [Bridge]
-```
+| Before | After |
+|--------|-------|
+| `[verse 1]` | `[Verse 1]` |
+| `[VERSE 1]` | `[Verse 1]` |
+| `[Verse 1: artist name]` | `[Verse 1: Artist Name]` |
+| `[CHORUS]` | `[Chorus]` |
 
 Headers are **preserved** (not stripped) because Phase 2 uses them as structural boundaries for chunking.
 
@@ -98,15 +95,15 @@ Uses `langdetect` to identify the language of each entry. Non-English entries ar
 
 Language detection preprocessing:
 - Section headers are stripped before detection (they're always in English and would bias the result)
-- Lines shorter than 10 characters are excluded (ad-libs like "Ayy", "Oh" aren't meaningful for detection)
+- Only lines longer than 10 characters are considered — lines of 10 characters or fewer are excluded (ad-libs like "Ayy", "Oh" aren't meaningful for detection)
 
 **Rationale for excluding non-English:** The embedding model (`all-MiniLM-L6-v2`) is primarily trained on English text. Non-English lyrics produce lower-quality embeddings and would degrade retrieval accuracy. Billboard data is overwhelmingly English, so this is a defensive filter.
 
 ### Artist/title mismatch
 
-If the Genius-returned artist/title doesn't closely match the original input (fuzzy score < 60 via `rapidfuzz.fuzz.token_sort_ratio`), the entry is flagged. These entries remain in the output — the flag is informational for manual review.
+`validate_entry()` supports comparing the Genius-returned artist/title against an `original_artist`/`original_title` (fuzzy score < 60 via `rapidfuzz.fuzz.token_sort_ratio`), flagging `artist_mismatch`/`title_mismatch` when they don't closely match.
 
-**Note:** This check currently compares Genius-returned fields against themselves (since the original CSV input is not carried through). Its main value is catching obviously broken entries. A future improvement would be to pass original CSV values through the pipeline for comparison.
+**Note:** This check is currently dead code. `main()` calls `validate_entry(entry)` without passing `original_title`/`original_artist`, and both checks are gated on those parameters being truthy (`if original_artist and entry.get("artist"): ...`) — since they default to `None` and are never supplied, the checks never run. `artist_mismatch`/`title_mismatch` reasons can never actually appear in `validation_report.csv` as the pipeline is currently invoked. A future improvement would be to thread the original CSV values through to `validate_entry()` so this logic is reachable.
 
 ## Design Decisions
 
@@ -119,7 +116,7 @@ If the Genius-returned artist/title doesn't closely match the original input (fu
 As required by the Phase 1.5 prompt, here are the assumptions made:
 
 1. Genius always prepends `"SongTitle Lyrics"` as the first line
-2. Contributor counts appear as `"\d+ Contributor..."` at the start
+2. Contributor counts appear as `"\d* Contributor..."` at the start
 3. `"Embed"` or `"\d+Embed"` appears at the very end of scraped text
 4. `"You might also like"` is injected between sections as advertising
 5. Section headers always use square bracket notation `[...]`

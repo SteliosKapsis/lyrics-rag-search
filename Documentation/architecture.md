@@ -36,7 +36,7 @@ Fetches lyrics and metadata from the Genius API for every song in the Billboard 
 
 **Key behaviors**:
 - Deduplicates by `(title.lower(), artist.lower())` before fetching
-- Extracts primary artist from multi-artist Billboard strings (e.g., "Drake Featuring Future" → "Drake") using regex on separators `(&, Featuring, Feat., X, ,)`
+- Extracts primary artist from multi-artist Billboard strings (e.g., "Drake Featuring Future" → "Drake") using regex on separators `(&, Featuring, Feat., And, X, ,)`
 - Exponential backoff on rate limits (up to 120s wait), hard stop on quota exhaustion
 - Resume support: loads existing `lyrics.json` on startup and skips already-fetched songs
 - Incremental saves every 10 songs (survives interruption)
@@ -63,8 +63,8 @@ Removes Genius scraping artifacts and validates each entry.
 **Validation flags** (entries are flagged but kept unless non-English):
 - `short_lyrics`: lyrics under 100 characters after cleaning
 - `non_english`: detected language is not English (these are **excluded entirely**)
-- `artist_mismatch`: fuzzy artist name match below 60% (token sort ratio)
-- `title_mismatch`: fuzzy title match below 60%
+
+`validate_entry()` also supports `artist_mismatch`/`title_mismatch` flags (fuzzy match against the original CSV title/artist below 60%, via token sort ratio), but this path is currently dead code: `main()` calls `validate_entry(entry)` without the `original_title`/`original_artist` arguments, and those checks are gated on the arguments being truthy. Since the original CSV input isn't threaded through to the call, the checks never run and these flags can never appear in output (the code even has a comment acknowledging this).
 
 Language detection uses `langdetect` after stripping section headers (always English) and very short lines (ad-libs).
 
@@ -374,7 +374,7 @@ The following values were set as defaults after Phase 6 evaluation identified th
 
 | Parameter | Default | Rationale |
 |---|---|---|
-| `embedding_model` | `text-embedding-3-small` | Best MRR (0.836), virtually tied with MiniLM (0.835) |
+| `embedding_model` | `all-MiniLM-L6-v2` | Default in `QueryPipeline` and the CLI; `text-embedding-3-small` is selected automatically in the Streamlit UI when its index exists, and showed the best MRR (0.836) in evaluation, virtually tied with MiniLM (0.835) |
 | `top_k` | 20 | Re-ranker benefit scales with k; 20 gives 88% Hit Rate |
 | `use_hybrid` | True | Helps at 8x fetch multiplier; negligible cost |
 | `use_reranker` | True | Single largest quality gain across all configurations |

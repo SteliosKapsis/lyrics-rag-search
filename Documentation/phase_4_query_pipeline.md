@@ -49,7 +49,7 @@ result = pipeline.query(
     use_hybrid=True,
     use_reranker=True,
     rrf_k=60,                # RRF fusion constant (default 60)
-    fetch_k_multiplier=3,    # re-ranker candidate pool (default 3x)
+    fetch_k_multiplier=5,    # re-ranker candidate pool (default 5x)
 )
 
 # Streaming usage (for Streamlit):
@@ -61,7 +61,7 @@ for token in stream:           # str tokens from LLM
 # result["llm_response"]        → LLM's synthesized answer
 # result["retrieval_results"]    → grouped chunk results with scores
 # result["query"]                → the original query string
-# result["hyde_hypothesis"]      → generated hypothetical lyric (or None)
+# result["hyde_hypothesis"]      → generated thematic passage (or None)
 ```
 
 ## Input
@@ -111,7 +111,7 @@ Returns a dict:
         "confidence": "high",
         "summary": "Based on the retrieved lyrics..."
     },
-    "hyde_hypothesis": "Raindrops on the window pane...",  # or None
+    "hyde_hypothesis": "A melancholy ballad drenched in rain imagery, evoking loneliness and quiet longing...",  # or None
 }
 ```
 
@@ -123,6 +123,8 @@ Returns a dict:
 - `python-dotenv>=1.0.0` — loads API keys from `.env`
 - `requests>=2.27.0` — Ollama REST API client
 - `pydantic>=2.0.0` — structured output schema definition and validation
+- `langfuse` — tracing/observability, used unconditionally via `@observe` decorators throughout the pipeline
+- `rank_bm25` — needed to unpickle `bm25.pkl` for hybrid/BM25 retrieval
 
 ## Architecture
 
@@ -132,13 +134,13 @@ Query → [HyDE?] → [Embed] → [Hybrid Retrieve (FAISS+BM25)?] → [Rerank?] 
 
 ### Step 1: HyDE (optional)
 
-**HyDE (Hypothetical Document Embeddings)** generates a hypothetical lyric before retrieval.
+**HyDE (Hypothetical Document Embeddings)** generates a hypothetical thematic description before retrieval.
 
-**Intuition:** The user's query ("sad song about rain") lives in "question space", but the indexed chunks live in "document space" (actual lyrics). These spaces are linguistically different. By asking the LLM to generate what the answer might look like (a hypothetical lyric like "raindrops fall on empty streets / tears I cannot hide"), we get an embedding that's closer to how real lyrics are written, producing better similarity matches.
+**Intuition:** The user's query ("sad song about rain") lives in "question space", but the indexed chunks live in "document space" (actual lyrics). These spaces are linguistically different. By asking the LLM to generate what the answer might look like (a short prose passage describing the song's tone, themes, and imagery — not actual lyrics), we get an embedding that's closer to how real lyrics are written, producing better similarity matches.
 
 **Why this helps for lyrics:** Song lyrics use figurative language, repetition, rhyme, and slang that are very different from how users describe songs in natural language. HyDE bridges this gap.
 
-The hypothesis is generated using the same LLM backend (Anthropic or Ollama) with a dedicated prompt that asks for 4-8 lines of plausible (not real) lyrics.
+The hypothesis is generated using the same LLM backend (Anthropic or Ollama) with a dedicated prompt that asks for a 3-5 sentence thematic passage in plain prose, describing the song's emotional tone, key themes, imagery, and feelings — explicitly not actual lyrics or verse lines.
 
 ### Step 2: Retrieve (Standard or Hybrid)
 
@@ -155,7 +157,7 @@ score(d) = Σ 1 / (k + rank_i(d))    where k = 60
 
 RRF is a simple, parameter-light fusion technique that doesn't require score normalization. The constant k=60 is the standard default from the original paper, but is now configurable via the `rrf_k` parameter (lower values weight the top-ranked method more heavily).
 
-Both methods fetch `fetch_k` candidates before fusing, then the top_k fused results are kept. When re-ranking is enabled, `fetch_k = top_k × fetch_k_multiplier` (default 3x) to give the re-ranker a larger candidate pool. The `fetch_k_multiplier` parameter is configurable — Phase 6 evaluation showed that 8x yields significantly better results than the default 3x.
+Both methods fetch `fetch_k` candidates before fusing, then the top_k fused results are kept. When re-ranking is enabled, `fetch_k = top_k × fetch_k_multiplier` (default 5x) to give the re-ranker a larger candidate pool. The `fetch_k_multiplier` parameter is configurable — Phase 6 evaluation showed that 8x yields significantly better results than the default 5x.
 
 When hybrid is disabled, only FAISS dense retrieval is used (original behavior).
 
@@ -169,7 +171,7 @@ The **cross-encoder reranker** (`pipeline/reranker.py`) re-scores each (query, c
 
 ### Step 4: Group by Song
 
-Chunks are grouped by (title, artist) to deduplicate repeated choruses. Songs are ranked by their best score (cross-encoder if available, else FAISS).
+Chunks are grouped by (title, artist) to deduplicate repeated choruses. Songs are ranked by their best score, using cross-encoder score if available, else RRF score (from hybrid retrieval) if available, else the raw FAISS score.
 
 ### Step 5: Synthesize (Structured, Standard or Streaming)
 
@@ -188,7 +190,7 @@ class SongMatch(BaseModel):
 
 class LLMResponse(BaseModel):
     matches: list[SongMatch]    # ranked by relevance
-    confidence: str             # "high", "medium", or "low"
+    confidence: Literal["high", "medium", "low"]  # "high", "medium", or "low"
     summary: str                # 1-2 sentence answer
 ```
 
@@ -241,7 +243,7 @@ Sets the LLM's role as a "lyrics search assistant" with explicit instructions to
 
 ### HyDE prompt
 
-Separate prompt that asks the LLM to generate 4-8 lines of hypothetical lyrics matching the user's description. Explicitly instructs not to use real lyrics from existing songs.
+Separate prompt that asks the LLM to write a 3-5 sentence thematic passage — in plain prose, like a music critic — describing the emotional tone, key themes, imagery, and feelings of a song matching the user's description. Explicitly instructs the LLM not to write song lyrics or verse lines.
 
 ### Prompt design tradeoffs
 
@@ -268,7 +270,7 @@ Separate prompt that asks the LLM to generate 4-8 lines of hypothetical lyrics m
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `rrf_k` | 60 | RRF fusion constant. Lower values weight the top-ranked method more heavily. |
-| `fetch_k_multiplier` | 3 | Candidate pool multiplier for re-ranking (`fetch_k = top_k × multiplier`). Higher values give the cross-encoder more candidates to re-score. |
+| `fetch_k_multiplier` | 5 | Candidate pool multiplier for re-ranking (`fetch_k = top_k × multiplier`). Higher values give the cross-encoder more candidates to re-score. |
 
 These parameters are not exposed as CLI arguments but are available when using `QueryPipeline` as a module (e.g., from the evaluation notebook or Streamlit app).
 
@@ -304,7 +306,7 @@ reranked_chunks = reranker.rerank(
 - **Lazy reranker loading** — cross-encoder model only loads when `use_reranker=True`, saving memory and startup time.
 - **HyDE uses same LLM backend** — if using Ollama, HyDE also runs locally.
 - **Reranker uses original query, not HyDE hypothesis** — the hypothesis is for retrieval (finding candidates); relevance judgment should be against what the user actually asked.
-- **Configurable fetch multiplier for reranking** — when reranking, we fetch `top_k × fetch_k_multiplier` candidates from FAISS (default 3x), then the reranker selects the best top-k from that pool. Phase 6 evaluation showed 8x yields significantly better results than 3x.
+- **Configurable fetch multiplier for reranking** — when reranking, we fetch `top_k × fetch_k_multiplier` candidates from FAISS (default 5x), then the reranker selects the best top-k from that pool. Phase 6 evaluation showed 8x yields significantly better results than 5x.
 - **Hybrid retrieval on by default** — BM25 complements FAISS well for lyrics search (keyword matches for direct recall, semantic for descriptive queries). Falls back gracefully to FAISS-only if `bm25.pkl` is missing.
 - **RRF over score normalization** — Reciprocal Rank Fusion doesn't require normalizing scores across methods (BM25 scores and cosine similarities are on completely different scales).
 - **Streaming via generator** — `query_stream()` yields retrieval data first, then LLM tokens. This lets the Streamlit app show results immediately while the answer streams in.

@@ -40,7 +40,7 @@ The following items have been fully implemented in code and are ready to produce
 
 ### 5. Larger Test Set
 
-**Status:** Implemented. Test set expanded from 25 to 75 queries in the evaluation notebook (cell 4).
+**Status:** Implemented. Test set expanded from 25 to 75 queries in the evaluation notebook (`TEST_SET`, cell 5; the cell 4 markdown intro above it still says 25 and hasn't been updated).
 
 **What:** 75 evaluation queries balanced across four types: 19 direct lyric, 19 semantic, 19 partial recall, 18 ambiguous. All songs verified to exist in the indexed dataset.
 
@@ -50,7 +50,7 @@ The following items have been fully implemented in code and are ready to produce
 
 ### 6. Chunk Size Experiments
 
-**Status:** Framework implemented in evaluation notebook (Experiment 5, cell 23). Requires building variant indices.
+**Status:** Framework implemented in evaluation notebook (Section 4, Chunking Parameter Sweep, cell 23). Requires building variant indices.
 
 **What:** Test different chunk size and overlap configurations to find the optimal chunking parameters for lyrics retrieval. The evaluation notebook already has the sweep structure and auto-detects available indices.
 

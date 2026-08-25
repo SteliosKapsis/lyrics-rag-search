@@ -10,7 +10,7 @@ Docker containerization of the Streamlit frontend for reproducible deployment an
 |------|-------------|
 | `Dockerfile` | Multi-stage build: installs runtime deps, copies app + pipeline + data |
 | `.dockerignore` | Excludes raw data, collection scripts, notebooks, .env, cache |
-| `docker-compose.yml` | Streamlit service + optional Ollama, volume mounts, env_file |
+| `docker-compose.yml` | `rabbitmq` broker, `worker` (RAG pipeline), `app` (Streamlit), plus optional/profile-gated `ollama`, `chunker`, `indexer`; volume mounts, env_file |
 | `requirements-docker.txt` | Slim runtime-only dependencies (no notebook/collection deps) |
 | `.env.example` | Template for API keys |
 
@@ -56,8 +56,10 @@ docker compose down
 If you re-run `pipeline/embedding.py` to regenerate `data/processed/`, the volume mount picks up the new files automatically — just restart:
 
 ```bash
-docker compose restart app
+docker compose restart worker
 ```
+
+The `worker` container is the one that owns the cached `QueryPipeline` instance (FAISS/BM25/metadata), so it's the one that must restart to pick up new data — `app` never loads the pipeline itself in Docker mode. Restarting `app` too doesn't hurt, but by itself it changes nothing.
 
 No image rebuild needed because `data/processed/` is mounted as a volume.
 
@@ -67,8 +69,17 @@ No image rebuild needed because `data/processed/` is mounted as a volume.
 Host machine                          Docker
 ─────────────                         ──────
 .env (API keys) ──env_file──────────→ app container
-                                        ├── Streamlit (port 8501)
-data/processed/ ──volume mount (ro)──→  ├── FAISS index
+                                        └── Streamlit (port 8501)
+                                             RabbitMQ RPC client only —
+                                             does NOT load the pipeline itself
+
+                                       rabbitmq container
+                                        └── AMQP broker (port 5672)
+                                             + management UI (port 15672)
+
+data/processed/ ──volume mount (ro)──→ worker container
+                                        ├── QueryPipeline (owns the cache)
+                                        ├── FAISS index
                                         ├── BM25 index
                                         ├── metadata.json
                                         └── sentence-transformers model
@@ -79,6 +90,8 @@ data/processed/ ──volume mount (ro)──→  ├── FAISS index
                                         └── llama3 model
                                              (cached in ollama-models volume)
 ```
+
+`app` always talks to `worker` over RabbitMQ in Docker mode (`RABBITMQ_URL` is set by docker-compose.yml) — it never calls `load_pipeline()` directly. See `Documentation/worker_rabbitmq.md` for the RPC pattern.
 
 ## Docker Image Details
 
@@ -98,9 +111,12 @@ This avoids shipping pip cache, wheel files, and build artifacts in the final im
 
 ### Runtime-only dependencies
 
-`requirements-docker.txt` includes only what the Streamlit app needs:
+`requirements-docker.txt` includes only what the `app` and `worker` containers need:
 - `sentence-transformers`, `faiss-cpu`, `rank_bm25` — retrieval
-- `anthropic`, `requests` — LLM backends
+- `anthropic`, `openai`, `tiktoken`, `requests` — LLM backends
+- `pika` — RabbitMQ client, required for the worker to run at all
+- `pydantic` — request/response models shared between app and worker
+- `langfuse>=2.0.0` — tracing
 - `streamlit` — frontend
 - `python-dotenv` — .env loading
 
