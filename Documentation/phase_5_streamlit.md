@@ -58,13 +58,15 @@ Text input field at the top of the page. Empty queries show an info message prom
 
 ### Results Display
 
-1. **LLM Response (structured, "### Answer")** — rendered in a bordered container as soon as both retrieval and generation have finished. In direct mode, `app.py` consumes the `pipeline.query_stream()` generator by silently accumulating LLM tokens into a plain string as they arrive — there is no live token-by-token UI update (no call to `st.write_stream()`, despite the pipeline itself supporting a streaming generator). Only once the stream is fully consumed is the collected string parsed as JSON into the `LLMResponse` Pydantic model. The parsed data provides:
-   - **Confidence badge** — colored indicator: green ("high"), orange ("medium"), red ("low")
-   - **Summary** — concise 1-2 sentence answer from the structured response
-   - **Per-match citation** — the cited `chunk_index` shown as a caption below the lyric quote (e.g. "chunk #5"), so it can be spot-checked against `metadata.json`. `app.py` calls `verify_citations()` (see `Documentation/phase_4_query_pipeline.md`) after parsing the response and appends a note to the caption if the citation couldn't be verified
-   - **Per-match explanations** — why each song was identified as a match
+1. **LLM Response (structured, "### Answer")** — rendered in a bordered container as soon as both retrieval and generation have finished. In direct mode, `app.py` consumes the `pipeline.query_stream()` generator by silently accumulating LLM tokens into a plain string as they arrive — there is no live token-by-token UI update (no call to `st.write_stream()`, despite the pipeline itself supporting a streaming generator). Only once the stream is fully consumed is the collected string parsed as JSON into the `LLMResponse` Pydantic model.
+   - **If `llm_response.abstained` is true** (nothing plausibly matched — either the LLM itself abstained, or retrieval never called it at all, see `Documentation/phase_4_query_pipeline.md`'s "gated by retrieval confidence" section), the container shows `st.warning(...)` with `abstain_reason` instead of a confidence badge and match cards.
+   - **Otherwise**, the parsed data provides:
+     - **Confidence badge** — colored indicator: green ("high"), orange ("medium"), red ("low")
+     - **Summary** — concise 1-2 sentence answer from the structured response
+     - **Per-match citation** — the cited `chunk_index` shown as a caption below the lyric quote (e.g. "chunk #5"), so it can be spot-checked against `metadata.json`. `app.py` calls `verify_citations()` (see `Documentation/phase_4_query_pipeline.md`) after parsing the response and appends a note to the caption if the citation couldn't be verified
+     - **Per-match explanations** — why each song was identified as a match
 2. **HyDE Hypothesis** — if HyDE was used, the generated hypothetical lyric is shown in a collapsed expander for thesis demonstration purposes
-3. **Retrieved Songs ("### Retrieved Songs")** — rendered after the "### Answer" section, once both retrieval and generation are complete (retrieval itself finishes first internally, but nothing is drawn to the page until generation is also done). Each result in a bordered card showing:
+3. **Retrieved Songs ("### Retrieved Songs")** — rendered after the "### Answer" section, once both retrieval and generation (or the retrieval-gated abstain decision, if the LLM was skipped) are complete — retrieval itself finishes first internally, but nothing is drawn to the page until then. Rendered **regardless of whether `llm_response.abstained` is true** — the raw retrieved chunks stay visible even when the LLM (or the gate) declined to name a match, so the user can self-diagnose a near-miss. Each result in a bordered card showing:
    - Song title, artist, album, release date
    - YouTube search link button (opens `youtube.com/results?search_query={artist}+{title}+official+music+video`)
    - Lyric excerpts as blockquotes with FAISS score, BM25 score (if hybrid), and cross-encoder score (if reranker)

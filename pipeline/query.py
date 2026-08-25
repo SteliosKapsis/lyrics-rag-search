@@ -44,7 +44,7 @@ import numpy as np
 import requests
 from dotenv import load_dotenv
 from langfuse import get_client, observe, propagate_attributes
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sentence_transformers import SentenceTransformer
 
 # Load .env from project root
@@ -88,6 +88,21 @@ class LLMResponse(BaseModel):
         ..., description="Overall confidence in these matches, given the retrieved excerpts.",
     )
     summary: str = Field(..., description="A 1-2 sentence answer to the user's query.")
+    abstained: bool = Field(
+        False,
+        description="True if none of the retrieved excerpts plausibly match the user's query. "
+        "This is the CORRECT and EXPECTED choice when nothing fits — not a fallback to avoid. "
+        "When true, matches should be empty and abstain_reason must explain why.",
+    )
+    abstain_reason: str | None = Field(
+        None, description="Required when abstained is true: a short explanation of why no excerpt matched.",
+    )
+
+    @model_validator(mode="after")
+    def _check_abstention_consistency(self) -> "LLMResponse":
+        if self.abstained and not self.abstain_reason:
+            raise ValueError("abstain_reason is required when abstained=True")
+        return self
 
 
 # Tool definition for Anthropic structured output via tool_use
@@ -103,15 +118,19 @@ You are a lyrics search assistant. The user will describe a song they're looking
 and you will be given retrieved lyric excerpts from a database along with similarity scores.
 
 Your task:
-1. Identify the most likely matching song(s) from the retrieved excerpts.
-2. Show the most relevant lyric excerpt(s) that match the user's description, quoted \
-verbatim (or as close to verbatim as possible) from the excerpt text — not paraphrased. \
-Cite the chunk_index shown in brackets next to the excerpt you drew it from.
+1. Identify the most likely matching song(s) from the retrieved excerpts — but ONLY if at \
+least one excerpt plausibly matches the user's description. Set abstained=true and matches=[] \
+if none of the excerpts plausibly match. Abstaining is the CORRECT and EXPECTED response in \
+that case, not a failure or a fallback — you will not be judged worse for abstaining honestly \
+than for guessing. Guessing wrong is the actual failure mode to avoid.
+2. If you do find a match, show the most relevant lyric excerpt(s) that match the user's \
+description, quoted verbatim (or as close to verbatim as possible) from the excerpt text — \
+not paraphrased. Cite the chunk_index shown in brackets next to the excerpt you drew it from.
 3. For each match, provide: song title, artist, album, and release date.
 4. If multiple songs could match, rank them by relevance and explain why.
-5. If the similarity scores are low (below 0.3) or the excerpts don't clearly match \
-the user's description, explicitly acknowledge the uncertainty — say something like \
-"I'm not fully confident in this match" rather than guessing.
+5. If the similarity scores are low (below 0.3) or the excerpts don't clearly match the \
+user's description, prefer abstaining (abstained=true, with abstain_reason explaining why) \
+over including a low-confidence guess in matches.
 
 Keep your response concise and well-structured. Do not fabricate lyrics or metadata \
 that aren't in the provided excerpts.\
@@ -205,6 +224,35 @@ def verify_citations(llm_response: "LLMResponse", grouped_results: list[dict]) -
     return checks
 
 
+def classify_retrieval_outcome(raw_results: list[dict], threshold: float) -> tuple[str, float]:
+    """
+    Classify a retrieval as "empty" (nothing retrieved), "low_relevance"
+    (retrieved something, but the best score is below `threshold`), or
+    "sufficient" (a plausible match exists) — the distinction query() and
+    query_stream() use to decide whether to skip the LLM call and abstain,
+    per file 05's own framing: an empty retrieval is a *retrieval* failure,
+    a populated-but-unhelpful one is a *coverage* failure, and collapsing
+    the two into one generic refusal destroys the signal needed to fix
+    the system, so they stay distinguishable in logs/traces.
+
+    Compares whichever score is most informative for the candidates at hand:
+    cross-encoder score if reranking ran, else RRF score, else raw FAISS
+    score — matching the same priority group_by_song() already uses to rank
+    songs. NOTE: these are different scales (cross-encoder logits are
+    unbounded, RRF scores are typically ~0.01-0.03, FAISS cosine is 0-1) —
+    `threshold` is only meaningful in the same scale as whichever of these
+    happens to be present, so a single shared threshold is a real
+    simplification, not a calibrated cutoff. See QueryPipeline's
+    abstain_score_threshold docstring.
+
+    Returns (outcome, best_score).
+    """
+    if not raw_results:
+        return "empty", 0.0
+    best = max(r.get("cross_encoder_score", r.get("rrf_score", r["score"])) for r in raw_results)
+    return ("sufficient" if best >= threshold else "low_relevance"), best
+
+
 class QueryPipeline:
     """
     End-to-end RAG query pipeline with support for:
@@ -226,6 +274,7 @@ class QueryPipeline:
         llm_model: str | None = None,
         llm_backend: str = "anthropic",
         reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        abstain_score_threshold: float | None = None,
     ):
         project_root = Path(__file__).resolve().parent.parent
         self.index_path = index_path or str(project_root / "data" / "processed" / "faiss.index")
@@ -293,6 +342,18 @@ class QueryPipeline:
         # Reranker loaded lazily on first use
         self._reranker = None
         self.reranker_model = reranker_model
+
+        # Score threshold below which query()/query_stream() skip the LLM call
+        # and abstain instead of guessing. PLACEHOLDER VALUE — 0.3 is not tuned
+        # against real data. Real tuning requires running the golden set's
+        # unanswerable-question subset (notebooks/evaluation.ipynb) through
+        # this pipeline and sweeping the threshold against the resulting
+        # abstention rate; that has not been done. Override via the
+        # RAG_ABSTAIN_SCORE_THRESHOLD env var or the constructor arg.
+        if abstain_score_threshold is not None:
+            self.abstain_score_threshold = abstain_score_threshold
+        else:
+            self.abstain_score_threshold = float(os.environ.get("RAG_ABSTAIN_SCORE_THRESHOLD", 0.3))
 
     def _assert_index_model_matches(self, index_path: str, embedding_model: str) -> None:
         """
@@ -733,6 +794,20 @@ class QueryPipeline:
             raw_results = reranker.rerank(query, raw_results, top_k=top_k)
             log.info("Re-ranked to top %d", len(raw_results))
 
+        # Attach the retrieval outcome as span metadata (empty / low_relevance /
+        # sufficient — see classify_retrieval_outcome) purely for trace
+        # visibility. This does NOT change what's returned — the actual
+        # abstain-or-continue decision is made by the caller (query()/
+        # query_stream()), which re-classifies after this returns.
+        outcome, best_score = classify_retrieval_outcome(raw_results, self.abstain_score_threshold)
+        get_client().update_current_span(
+            metadata={
+                "retrieval_outcome": outcome,
+                "best_relevance_score": best_score,
+                "abstain_threshold": self.abstain_score_threshold,
+            },
+        )
+
         return raw_results
 
     @observe(name="rag-query")
@@ -809,8 +884,28 @@ class QueryPipeline:
             grouped = self.group_by_song(raw_results)
             log.info("Grouped into %d unique song(s)", len(grouped))
 
-            # Step 5: Synthesize with LLM (structured output)
-            llm_response = self.synthesize(query, grouped)
+            # Step 5: Synthesize with LLM (structured output) — unless retrieval
+            # didn't turn up anything plausible, in which case skip the LLM call
+            # entirely and abstain. Cheapest and safest option: zero chance of
+            # hallucination if the LLM is never asked to guess in the first place.
+            outcome, best_score = classify_retrieval_outcome(raw_results, self.abstain_score_threshold)
+            log.info(
+                "Retrieval outcome: %s (best_score=%.3f, threshold=%.3f, n_chunks=%d)",
+                outcome, best_score, self.abstain_score_threshold, len(raw_results),
+            )
+            if outcome != "sufficient":
+                reason = (
+                    "No lyrics were retrieved for this query." if outcome == "empty"
+                    else f"Retrieved excerpts scored below the relevance threshold "
+                         f"({best_score:.3f} < {self.abstain_score_threshold})."
+                )
+                llm_response = LLMResponse(
+                    matches=[], confidence="low",
+                    summary="I couldn't confidently identify a matching song.",
+                    abstained=True, abstain_reason=reason,
+                )
+            else:
+                llm_response = self.synthesize(query, grouped)
             log.info("LLM confidence: %s, matches: %d", llm_response.confidence, len(llm_response.matches))
 
             # Best-effort check that each match's chunk_index citation is real and its
@@ -819,7 +914,11 @@ class QueryPipeline:
             citation_checks = verify_citations(llm_response, grouped)
 
             lf.set_current_trace_io(
-                output={"confidence": llm_response.confidence, "num_matches": len(llm_response.matches)},
+                output={
+                    "confidence": llm_response.confidence,
+                    "num_matches": len(llm_response.matches),
+                    "abstained": llm_response.abstained,
+                },
             )
             return {
                 "query": query,
@@ -904,7 +1003,31 @@ class QueryPipeline:
                 "hyde_hypothesis": hyde_hypothesis,
             }
 
-            # Step 5: Stream LLM synthesis
+            # Step 5: Stream LLM synthesis — unless retrieval didn't turn up
+            # anything plausible, in which case skip the LLM call and yield an
+            # abstain response directly (same logic as query(), see its comments).
+            outcome, best_score = classify_retrieval_outcome(raw_results, self.abstain_score_threshold)
+            log.info(
+                "Retrieval outcome: %s (best_score=%.3f, threshold=%.3f, n_chunks=%d)",
+                outcome, best_score, self.abstain_score_threshold, len(raw_results),
+            )
+            if outcome != "sufficient":
+                reason = (
+                    "No lyrics were retrieved for this query." if outcome == "empty"
+                    else f"Retrieved excerpts scored below the relevance threshold "
+                         f"({best_score:.3f} < {self.abstain_score_threshold})."
+                )
+                abstain_response = LLMResponse(
+                    matches=[], confidence="low",
+                    summary="I couldn't confidently identify a matching song.",
+                    abstained=True, abstain_reason=reason,
+                )
+                # Yield the whole thing as one chunk — app.py's existing collect-then-parse
+                # loop (concatenate all yielded tokens, then LLMResponse.model_validate_json())
+                # handles this identically to a real multi-token stream, no caller change needed.
+                yield abstain_response.model_dump_json()
+                return
+
             context = build_context(grouped)
             user_message = (
                 f"User query: \"{query}\"\n\n"

@@ -306,7 +306,11 @@ def main():
     )
 
     with st.container(border=True):
-        if llm_response:
+        if llm_response and llm_response.abstained:
+            st.warning(
+                f"Could not confidently identify a match. {llm_response.abstain_reason or ''}"
+            )
+        elif llm_response:
             badge_colors = {"high": "green", "medium": "orange", "low": "red"}
             color = badge_colors.get(llm_response.confidence, "gray")
             st.markdown(f"**Confidence:** :{color}[{llm_response.confidence}]")

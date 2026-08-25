@@ -177,9 +177,20 @@ The **cross-encoder reranker** (`pipeline/reranker.py`) re-scores each (query, c
 
 Chunks are grouped by (title, artist) to deduplicate repeated choruses. Songs are ranked by their best score, using cross-encoder score if available, else RRF score (from hybrid retrieval) if available, else the raw FAISS score.
 
-### Step 5: Synthesize (Structured, Standard or Streaming)
+### Step 5: Synthesize (Structured, Standard or Streaming) — gated by retrieval confidence
 
-The grouped results are sent to the LLM with the system prompt and user query. Both backends return **structured JSON** conforming to a Pydantic schema, not free text.
+Before calling the LLM at all, `classify_retrieval_outcome(raw_results, abstain_score_threshold)` checks whether retrieval turned up anything plausible:
+- **`"empty"`** — nothing retrieved.
+- **`"low_relevance"`** — something retrieved, but the best score is below `abstain_score_threshold` (default `0.3`, a placeholder — see below).
+- **`"sufficient"`** — proceed to synthesis normally.
+
+For the first two cases, the LLM is **never called** — `query()`/`query_stream()` construct `LLMResponse(abstained=True, matches=[], abstain_reason=...)` directly. This is deliberately the cheapest and safest option: there is no way for the LLM to fabricate a match on unpromising input if it's never asked to. Distinguishing "empty" from "low_relevance" (rather than one generic refusal) matters because they're different failure modes — one says retrieval found nothing, the other says retrieval found something but it doesn't look like a real match — and collapsing them destroys the signal needed to diagnose which stage to fix.
+
+**The threshold is not tuned.** `0.3` is a placeholder; a real value requires running the golden set's unanswerable-question subset through the pipeline and sweeping the threshold against the resulting abstention rate. It also mixes metric scales: `cross_encoder_score` (unbounded logit, when reranking ran) takes priority over `rrf_score` (typically ~0.01–0.03, when hybrid ran without reranking) takes priority over raw FAISS cosine `score` (0–1) — the same threshold means something different depending on which of these is actually being compared.
+
+Only when the outcome is `"sufficient"` do the grouped results actually get sent to the LLM with the system prompt and user query. Both backends return **structured JSON** conforming to a Pydantic schema, not free text.
+
+**The system prompt makes abstention the expected choice, not a fallback** — point 1 explicitly says the LLM should set `abstained=true, matches=[]` when nothing plausibly matches, and that it "will not be judged worse for abstaining honestly than for guessing." This directly targets the failure mode where a prompt that implicitly punishes non-answers pushes the model toward fabricating a match instead.
 
 #### Structured Output Schema
 
@@ -197,6 +208,8 @@ class LLMResponse(BaseModel):
     matches: list[SongMatch]    # ranked by relevance
     confidence: Literal["high", "medium", "low"]  # "high", "medium", or "low"
     summary: str                # 1-2 sentence answer
+    abstained: bool = False     # True when nothing plausibly matched — correct, expected, not a failure
+    abstain_reason: str | None = None  # required when abstained=True (enforced by a model_validator)
 ```
 
 Every field carries a `Field(description=...)` — since `RESPONSE_TOOL`'s schema is generated live from these models via `LLMResponse.model_json_schema()`, that description text is literally the instruction the LLM sees for how to fill each field, not just documentation for humans.

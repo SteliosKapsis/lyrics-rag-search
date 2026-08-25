@@ -35,6 +35,10 @@ Structured output from LLM synthesis.
 | `matches` | `list[SongMatch]` | Ranked list of matched songs |
 | `confidence` | `"high" \| "medium" \| "low"` | Overall retrieval confidence |
 | `summary` | `str` | 1–2 sentence answer summarizing the result |
+| `abstained` | `bool` (default `False`) | `True` when nothing plausibly matched the query. This is a correct, expected LLM output — the system prompt explicitly tells the model abstaining is not penalized versus guessing. |
+| `abstain_reason` | `str \| None` | Required when `abstained` is `True` (enforced by a `model_validator` — constructing `LLMResponse(abstained=True)` without it raises `ValidationError`); a short explanation of why nothing matched. |
+
+`query()`/`query_stream()` can also *force* an abstain response themselves, without ever calling the LLM, when retrieval itself didn't turn up anything plausible — see `classify_retrieval_outcome` and the `abstain_score_threshold` constructor arg below.
 
 ---
 
@@ -53,6 +57,7 @@ QueryPipeline(
     llm_model: str | None = None,
     llm_backend: str = "anthropic",
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    abstain_score_threshold: float | None = None,
 )
 ```
 
@@ -65,10 +70,15 @@ QueryPipeline(
 | `llm_model` | `None` | Specific LLM model. Defaults: `claude-haiku-4-5-20251001` (Anthropic), `llama3` (Ollama) |
 | `llm_backend` | `"anthropic"` | LLM backend: `"anthropic"` or `"ollama"` |
 | `reranker_model` | `"cross-encoder/ms-marco-MiniLM-L-6-v2"` | Cross-encoder model for re-ranking |
+| `abstain_score_threshold` | `None` → reads `RAG_ABSTAIN_SCORE_THRESHOLD` env var, else `0.3` | Score below which `query()`/`query_stream()` skip the LLM call and abstain. **Not yet tuned** — see below. |
 
 Loads FAISS index, metadata JSON, and BM25 index on initialization. Cross-encoder is loaded lazily on first use.
 
 **Model/index assertion:** immediately after loading the FAISS index, `__init__` reads the `{index}_info.json` sidecar written by `pipeline/embedding.py`'s `save_index_info()` and raises `ValueError` if it's missing, if its recorded `embedding_model` doesn't match `embedding_model`, or if its recorded `embedding_dim` doesn't match the loaded index's actual dimension. This is deliberate and has no bypass flag: query embeddings and index embeddings from different models occupy incomparable vector spaces, and a mismatch previously degraded retrieval silently rather than raising. Any index built before this check existed (no sidecar) must be regenerated via `pipeline/embedding.py` before it can be loaded.
+
+**Retrieval-gated abstention:** `query()` and `query_stream()` call `classify_retrieval_outcome(raw_results, self.abstain_score_threshold)` after retrieval/reranking. If the outcome is `"empty"` (nothing retrieved) or `"low_relevance"` (best score below `abstain_score_threshold`), the LLM is never called — an `LLMResponse(abstained=True, matches=[], abstain_reason=...)` is constructed directly, which is the cheapest and safest option (zero chance of the LLM fabricating a match on unpromising input). Only when the outcome is `"sufficient"` does synthesis actually run. This distinguishes a *retrieval* failure (nothing found) from a *coverage* failure (found something, but it's not a good match) in both logs and Langfuse trace metadata, rather than collapsing both into one generic outcome.
+
+`abstain_score_threshold` is a genuine **placeholder value (0.3)**, not tuned against real data — real tuning requires running the golden set's unanswerable-question subset through the pipeline and sweeping the threshold against the resulting abstention rate, which has not been done. It also compares across a metric that changes shape depending on whether reranking ran (`cross_encoder_score` — an unbounded cross-encoder logit — takes priority over `rrf_score`, which takes priority over the raw FAISS cosine `score`), so a single shared threshold is a simplification, not a calibrated cutoff per metric.
 
 ---
 
@@ -174,6 +184,16 @@ Returns one `{title, artist, chunk_index, match_score, verified}` dict per `Song
 **This is citation *linking*, not citation *verification* by entailment** — it only checks `relevant_lyric` against its cited chunk, not the rest of the response (`summary`, `explanation`). A legitimately-correct citation can still score low here if the LLM paraphrased instead of quoting; treat `verified: False` as a cheap fabrication *signal*, not proof that the citation is wrong. Full claim-decomposition + entailment checking against every field is a larger, separate roadmap item (`Instructions/08-roadmap-open-questions.md`), not what this function does.
 
 A `chunk_index` that doesn't exist among the song's retrieved chunks (out of range, or invented by the LLM) is flagged `verified: False` with `match_score: 0.0` — never raises.
+
+---
+
+#### `classify_retrieval_outcome`
+
+```python
+def classify_retrieval_outcome(raw_results: list[dict], threshold: float) -> tuple[str, float]
+```
+
+Returns `("empty", 0.0)` if `raw_results` is empty, `("low_relevance", best_score)` if the best score is below `threshold`, or `("sufficient", best_score)` otherwise. `best_score` is `cross_encoder_score` if present, else `rrf_score`, else raw FAISS `score` — same priority `group_by_song()` uses. Used by `QueryPipeline.query()`/`query_stream()` to decide whether to skip the LLM and abstain — see `QueryPipeline.__init__`'s "Retrieval-gated abstention" section above.
 
 ---
 
