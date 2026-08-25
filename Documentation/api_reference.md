@@ -56,12 +56,14 @@ QueryPipeline(
 | `index_path` | `data/processed/faiss.index` | Path to FAISS index file |
 | `metadata_path` | `data/processed/metadata.json` | Path to metadata JSON (positionally aligned with FAISS) |
 | `bm25_path` | `data/processed/bm25.pkl` | Path to BM25 pickle (optional; hybrid degrades gracefully if missing) |
-| `embedding_model` | `"all-MiniLM-L6-v2"` | Model name for query-time embedding. Must match the model used at index time |
+| `embedding_model` | `"all-MiniLM-L6-v2"` | Model name for query-time embedding. **Enforced** to match the model used at index time — see below |
 | `llm_model` | `None` | Specific LLM model. Defaults: `claude-haiku-4-5-20251001` (Anthropic), `llama3` (Ollama) |
 | `llm_backend` | `"anthropic"` | LLM backend: `"anthropic"` or `"ollama"` |
 | `reranker_model` | `"cross-encoder/ms-marco-MiniLM-L-6-v2"` | Cross-encoder model for re-ranking |
 
 Loads FAISS index, metadata JSON, and BM25 index on initialization. Cross-encoder is loaded lazily on first use.
+
+**Model/index assertion:** immediately after loading the FAISS index, `__init__` reads the `{index}_info.json` sidecar written by `pipeline/embedding.py`'s `save_index_info()` and raises `ValueError` if it's missing, if its recorded `embedding_model` doesn't match `embedding_model`, or if its recorded `embedding_dim` doesn't match the loaded index's actual dimension. This is deliberate and has no bypass flag: query embeddings and index embeddings from different models occupy incomparable vector spaces, and a mismatch previously degraded retrieval silently rather than raising. Any index built before this check existed (no sidecar) must be regenerated via `pipeline/embedding.py` before it can be loaded.
 
 ---
 
@@ -344,10 +346,12 @@ def embed_chunks(
     model: SentenceTransformer,
     texts: list[str],
     batch_size: int = 64,
+    checkpoint_path: Path | None = None,
+    fingerprint: str | None = None,
 ) -> np.ndarray
 ```
 
-Returns L2-normalized embedding matrix of shape `(n_texts, embedding_dim)`.
+Returns L2-normalized embedding matrix of shape `(n_texts, embedding_dim)`. Embeds in 5,000-text slices; if `checkpoint_path`/`fingerprint` are given, progress is saved after every slice (`checkpoint_path_for()` derives the path from the index output path) so an interrupted run resumes instead of re-embedding from scratch — pass the same `checkpoint_path`/`fingerprint` again to resume.
 
 #### `embed_chunks_openai`
 
@@ -356,10 +360,26 @@ def embed_chunks_openai(
     texts: list[str],
     model: str = "text-embedding-3-small",
     batch_size: int = 2048,
+    checkpoint_path: Path | None = None,
+    fingerprint: str | None = None,
 ) -> np.ndarray
 ```
 
-Requires `OPENAI_API_KEY` env var. Truncates texts to 8192 tokens via tiktoken. Returns L2-normalized embeddings.
+Requires `OPENAI_API_KEY` env var. Truncates texts to 8192 tokens via tiktoken. Returns L2-normalized embeddings. Same checkpointing as `embed_chunks`, but saved after every API batch rather than every slice — this path is a sequence of network-bound calls that can run for hours over the full corpus, so a rate limit/timeout/outage partway through no longer loses prior progress.
+
+#### `save_index_info`
+
+```python
+def save_index_info(
+    index_output_path: str,
+    embedding_model: str,
+    embedding_dim: int,
+    contextual: bool,
+    num_vectors: int,
+) -> None
+```
+
+Writes a `{index}_info.json` sidecar (e.g. `faiss_bge.index` → `faiss_bge_info.json`) recording `embedding_model`, `embedding_dim`, `normalize`, `distance_metric`, `contextual`, `num_vectors`, and `built_at`. `QueryPipeline.__init__` reads this and refuses to load the index if it's missing or doesn't match — see `QueryPipeline` above. Does not touch `metadata.json`'s schema; this is a new sibling file.
 
 #### `build_faiss_index`
 
@@ -389,10 +409,12 @@ Options:
   --bm25-output PATH      BM25 pickle output (default: data/processed/bm25.pkl)
   --model STR             Embedding model (default: all-MiniLM-L6-v2)
                           Options: all-mpnet-base-v2, BAAI/bge-small-en-v1.5
-  --batch-size INT        Embedding batch size (default: 64)
+  --batch-size INT        Embedding batch size (default: 64 for local models, 2048 for --openai)
   --skip-contextual       Embed raw text without metadata header (ablation)
   --openai                Use OpenAI text-embedding-3-small instead of local model
 ```
+
+**Interrupted runs**: if embedding is interrupted (crash, network failure, rate limit), re-running the identical command resumes from the last checkpointed slice/batch instead of starting over — see `embed_chunks`/`embed_chunks_openai` above. The checkpoint file (`{index}_embed_checkpoint.npz`) is deleted automatically once the full run (index + metadata + BM25 + `_info.json` sidecar) completes successfully.
 
 **Output file auto-suffixing**:
 
@@ -414,6 +436,8 @@ The script automatically adjusts output filenames based on model and flags, so y
 # Builds: faiss_bge_noctx.index, ...
 .venv\Scripts\python pipeline\embedding.py --model BAAI/bge-small-en-v1.5 --skip-contextual
 ```
+
+Each build also writes its own model-identity sidecar (e.g. `faiss_bge_info.json` alongside `faiss_bge.index`) — see `save_index_info` above.
 
 ---
 

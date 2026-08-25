@@ -38,9 +38,12 @@ Embeds lyric chunks into dense vectors using sentence-transformers and stores th
 | `faiss.index` | `data/processed/` | FAISS binary index file containing all embedding vectors |
 | `metadata.json` | `data/processed/` | JSON array of chunk metadata, positionally aligned with the FAISS index |
 | `bm25.pkl` | `data/processed/` | Pickled BM25Okapi index for keyword-based sparse retrieval |
+| `faiss_info.json` | `data/processed/` | Model-identity sidecar (embedding model, dim, contextual flag) — asserted against at query time, see below |
 | `faiss_noctx.index` | `data/processed/` | Non-contextual FAISS index (only when `--skip-contextual` is used) |
 | `metadata_noctx.json` | `data/processed/` | Non-contextual metadata (only when `--skip-contextual` is used) |
 | `bm25_noctx.pkl` | `data/processed/` | Non-contextual BM25 index (only when `--skip-contextual` is used) |
+
+Every variant gets its own `_info.json` sidecar (e.g. `faiss_bge_info.json` next to `faiss_bge.index`).
 
 ### Metadata schema (each entry)
 
@@ -57,6 +60,28 @@ Embeds lyric chunks into dense vectors using sentence-transformers and stores th
 ```
 
 The `text` field is included in metadata so the query pipeline (Phase 4) can display lyric excerpts without a separate lookup.
+
+### Model-identity sidecar & query-time assertion
+
+`metadata.json` intentionally carries no embedding-model field — mixing a model identifier into that schema would touch every reader of the file for no benefit. Instead, `save_index_info()` writes a small sibling file (`{index_stem}_info.json`) recording:
+
+```json
+{
+  "embedding_model": "all-MiniLM-L6-v2",
+  "embedding_dim": 384,
+  "normalize": true,
+  "distance_metric": "ip",
+  "contextual": true,
+  "num_vectors": 175792,
+  "built_at": "2026-08-25T15:44:05Z"
+}
+```
+
+`QueryPipeline.__init__` (Phase 4) reads this sidecar immediately after loading the FAISS index and raises `ValueError` — refusing to start — if the sidecar is missing, its `embedding_model` doesn't match the model the pipeline is configured to embed queries with, or its `embedding_dim` doesn't match the loaded index's actual dimension. This is deliberate: query embeddings and index embeddings from different models occupy incomparable vector spaces, and without this check the mismatch degrades retrieval silently rather than raising. There is no bypass — an index built before this check existed (no sidecar) must be regenerated.
+
+### Checkpointed regeneration
+
+If embedding is interrupted partway through (crash, network failure, an OpenAI rate limit or outage), re-running the identical `pipeline/embedding.py` command resumes from the last checkpointed slice/batch instead of starting over. Progress is written to `{index_stem}_embed_checkpoint.npz` after every 5,000-text slice (local models) or every API batch (`--openai`), and is deleted automatically once the full run — index, metadata, BM25, and the `_info.json` sidecar — completes successfully. A checkpoint from a different model/corpus/contextual configuration is detected via a fingerprint and ignored rather than incorrectly resumed from.
 
 ## Dependencies
 
@@ -154,7 +179,7 @@ The model name for local embeddings is configurable via `--model` so Phase 6 can
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `--model` | `all-MiniLM-L6-v2` | Sentence-transformers model name from HuggingFace |
-| `--batch-size` | 64 | Number of texts to embed at once. Lower if running out of memory. |
+| `--batch-size` | 64 (local models); 2048 for `--openai` | Number of texts to embed at once. Lower if running out of memory; the `--openai` default is higher because that path is a sequence of API calls, not memory-bound. |
 | `--input` | `data/processed/chunks.jsonl` | Input chunks file |
 | `--index-output` | `data/processed/faiss.index` | Output FAISS index path |
 | `--metadata-output` | `data/processed/metadata.json` | Output metadata JSON path |

@@ -145,6 +145,7 @@ All embeddings are **L2-normalized** before indexing. This makes inner product e
 - Type: `IndexFlatIP` — exact inner product search (no approximation)
 - Rationale: The corpus size (~175K vectors) is small enough that exact search is fast (<50ms) and avoids the recall penalty of approximate methods (HNSW, IVF)
 - FAISS stores **only vectors, no metadata**. Positional alignment is the critical invariant: vector at position `i` in FAISS corresponds to chunk at position `i` in `metadata.json` and position `i` in the BM25 corpus
+- Each index also has a `_info.json` sidecar recording which embedding model built it. `QueryPipeline.__init__` asserts this matches the model it's about to embed queries with, and refuses to load on a mismatch or missing sidecar — see `Documentation/phase_3_embedding_indexing.md`
 
 ### BM25 Index
 
@@ -156,11 +157,11 @@ All embeddings are **L2-normalized** before indexing. This makes inner product e
 ### Index File Naming Convention
 
 ```
-faiss.index             + metadata.json     + bm25.pkl          → all-MiniLM-L6-v2 (contextual)
-faiss_bge.index         + metadata_bge.json + bm25_bge.pkl      → BAAI/bge-small-en-v1.5
-faiss_openai.index      + metadata_openai.json + bm25_openai.pkl → OpenAI
-faiss_noctx.index       + metadata_noctx.json  + bm25_noctx.pkl → MiniLM, no context (ablation)
-faiss_bge_noctx.index   + ...                                    → BGE, no context
+faiss.index             + metadata.json     + bm25.pkl          + faiss_info.json          → all-MiniLM-L6-v2 (contextual)
+faiss_bge.index         + metadata_bge.json + bm25_bge.pkl      + faiss_bge_info.json      → BAAI/bge-small-en-v1.5
+faiss_openai.index      + metadata_openai.json + bm25_openai.pkl + faiss_openai_info.json  → OpenAI
+faiss_noctx.index       + metadata_noctx.json  + bm25_noctx.pkl + faiss_noctx_info.json    → MiniLM, no context (ablation)
+faiss_bge_noctx.index   + ...                                                               → BGE, no context
 ```
 
 ---
