@@ -18,6 +18,7 @@ retrieval over the full index. That's why we use it as a second stage:
 
 import logging
 
+from langfuse import get_client, observe
 from sentence_transformers import CrossEncoder
 
 logging.basicConfig(
@@ -46,6 +47,7 @@ class Reranker:
         self.model = CrossEncoder(model_name)
         self.model_name = model_name
 
+    @observe(name="rerank")
     def rerank(
         self,
         query: str,
@@ -84,4 +86,10 @@ class Reranker:
         if top_k is not None:
             ranked = ranked[:top_k]
 
+        # Candidate list only (not full chunk text) — bounded by len(chunks)/top_k.
+        get_client().update_current_span(
+            input={"query": query, "n_candidates": len(chunks)},
+            output=[{"title": c["title"], "artist": c["artist"], "chunk_index": c["chunk_index"],
+                     "cross_encoder_score": c["cross_encoder_score"]} for c in ranked],
+        )
         return ranked

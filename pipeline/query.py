@@ -591,6 +591,7 @@ class QueryPipeline:
                 summary=f"Error: Ollama request failed: {e}",
             )
 
+    @observe(name="dense-retrieval")
     def retrieve(self, query: str, top_k: int = 5) -> list[dict]:
         """
         Embed query and retrieve top-k similar chunks from FAISS.
@@ -608,8 +609,16 @@ class QueryPipeline:
             entry["score"] = float(score)
             results.append(entry)
 
+        # Candidate list only (title/artist/chunk_index/score) — not full chunk
+        # text, to keep trace payloads lean; already bounded by top_k.
+        get_client().update_current_span(
+            input={"query": query, "top_k": top_k},
+            output=[{"title": r["title"], "artist": r["artist"], "chunk_index": r["chunk_index"],
+                     "score": r["score"]} for r in results],
+        )
         return results
 
+    @observe(name="sparse-retrieval")
     def retrieve_bm25(self, query: str, top_k: int = 5) -> list[dict]:
         """
         Retrieve top-k chunks using BM25 keyword search.
@@ -632,8 +641,14 @@ class QueryPipeline:
             entry["bm25_score"] = float(scores[idx])
             results.append(entry)
 
+        get_client().update_current_span(
+            input={"query": query, "top_k": top_k},
+            output=[{"title": r["title"], "artist": r["artist"], "chunk_index": r["chunk_index"],
+                     "bm25_score": r["bm25_score"]} for r in results],
+        )
         return results
 
+    @observe(name="hybrid-fusion")
     def retrieve_hybrid(
         self, query: str, top_k: int = 5, rrf_k: int = 60,
     ) -> list[dict]:
@@ -690,6 +705,11 @@ class QueryPipeline:
             entry["rrf_score"] = rrf_scores[key]
             results.append(entry)
 
+        get_client().update_current_span(
+            input={"query": query, "top_k": top_k, "rrf_k": rrf_k},
+            output=[{"title": r["title"], "artist": r["artist"], "chunk_index": r["chunk_index"],
+                     "rrf_score": r["rrf_score"]} for r in results],
+        )
         return results
 
     def group_by_song(self, results: list[dict]) -> list[dict]:

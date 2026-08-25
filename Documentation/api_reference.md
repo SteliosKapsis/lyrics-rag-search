@@ -199,7 +199,7 @@ Returns `("empty", 0.0)` if `raw_results` is empty, `("low_relevance", best_scor
 
 #### `retrieve`
 
-Dense-only FAISS retrieval.
+Dense-only FAISS retrieval. Traced as its own Langfuse span (`dense-retrieval`) — nests under `hybrid-fusion` when called from `retrieve_hybrid()`, or directly under `retrieval` when hybrid is off. See `langfuse.md`.
 
 ```python
 def retrieve(query: str, top_k: int = 5) -> list[dict]
@@ -211,7 +211,7 @@ Returns chunk dicts with `score` (FAISS inner product) field added.
 
 #### `retrieve_bm25`
 
-Sparse keyword retrieval.
+Sparse keyword retrieval. Traced as its own span (`sparse-retrieval`), nested under `hybrid-fusion`.
 
 ```python
 def retrieve_bm25(query: str, top_k: int = 5) -> list[dict]
@@ -223,7 +223,7 @@ Returns chunk dicts with `bm25_score` field added. Returns empty list if BM25 in
 
 #### `retrieve_hybrid`
 
-RRF-fused dense + sparse retrieval.
+RRF-fused dense + sparse retrieval. Traced as its own span (`hybrid-fusion`) — since it calls `retrieve()` and `retrieve_bm25()` internally, those become its child spans automatically (Langfuse nests based on actual call structure).
 
 ```python
 def retrieve_hybrid(query: str, top_k: int = 5, rrf_k: int = 60) -> list[dict]
@@ -294,6 +294,8 @@ Loads cross-encoder model on instantiation. Supported models:
 | `BAAI/bge-reranker-base` | ~280MB | Slow | Best |
 
 #### `rerank`
+
+Traced as its own Langfuse span (`rerank`), nested under `retrieval` in the trace tree (see `langfuse.md`) — separates reranking latency and its candidate list from the dense/sparse/fusion stages that ran before it.
 
 ```python
 def rerank(
