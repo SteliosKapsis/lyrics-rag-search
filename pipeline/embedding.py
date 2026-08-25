@@ -11,12 +11,21 @@ Or with custom parameters:
 
 Inputs:  data/processed/chunks.jsonl
 Outputs: data/processed/faiss.index + data/processed/metadata.json + data/processed/bm25.pkl
+         + data/processed/faiss_info.json (model-identity sidecar, asserted against
+           at query time by pipeline/query.py::QueryPipeline — see save_index_info())
+
+If interrupted mid-run, a partial-embedding checkpoint (*_embed_checkpoint.npz)
+is left next to the index output; re-running the same command resumes instead
+of re-embedding from scratch. It's deleted automatically on a successful run.
 """
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 import pickle
+from datetime import datetime, timezone
 from pathlib import Path
 
 import faiss
@@ -47,42 +56,141 @@ def load_chunks(jsonl_path: str) -> list[dict]:
     return chunks
 
 
+def embedding_fingerprint(texts: list[str], model_label: str, contextual: bool) -> str:
+    """
+    Cheap fingerprint identifying a specific (texts, model, contextual) combo,
+    used to check whether an on-disk embedding checkpoint actually matches the
+    run trying to resume from it (not a stale leftover from a different config).
+    Not a full corpus hash — just enough to catch a mismatch, not tamper-proof.
+    """
+    sample = f"{len(texts)}|{model_label}|{contextual}|{texts[0][:200] if texts else ''}|{texts[-1][:200] if texts else ''}"
+    return hashlib.sha256(sample.encode("utf-8")).hexdigest()[:16]
+
+
+def checkpoint_path_for(index_output_path: str) -> Path:
+    """
+    Derive the embedding-progress checkpoint path from an (already-suffixed)
+    FAISS index output path, so each of the model/openai/skip-contextual
+    variants gets its own independent checkpoint file.
+    """
+    p = Path(index_output_path)
+    return p.with_name(p.stem + "_embed_checkpoint.npz")
+
+
+def _load_embed_checkpoint(checkpoint_path: Path, fingerprint: str) -> tuple[np.ndarray, int] | None:
+    """
+    Load a partial-embedding checkpoint if it exists and matches `fingerprint`.
+    Returns (embeddings_so_far, next_index) or None if there's nothing usable
+    to resume from (missing, corrupt, or from a different run's config) — a
+    failed/corrupt checkpoint is always treated as "start fresh", never a crash.
+    """
+    if not checkpoint_path.exists():
+        return None
+    try:
+        data = np.load(checkpoint_path, allow_pickle=False)
+        saved_fingerprint = str(data["fingerprint"].item())
+        if saved_fingerprint != fingerprint:
+            log.warning(
+                "Checkpoint %s exists but doesn't match this run's input "
+                "(different model/corpus/contextual setting) — ignoring it, starting fresh.",
+                checkpoint_path,
+            )
+            return None
+        embeddings = data["embeddings"]
+        next_index = int(data["next_index"].item())
+        log.info("Resuming from checkpoint %s: %d texts already embedded.", checkpoint_path, next_index)
+        return embeddings, next_index
+    except Exception as e:
+        log.warning(
+            "Checkpoint %s exists but could not be loaded (%s) — treating as no checkpoint, starting fresh.",
+            checkpoint_path, e,
+        )
+        return None
+
+
+def _save_embed_checkpoint(checkpoint_path: Path, embeddings: np.ndarray, next_index: int, fingerprint: str) -> None:
+    """
+    Atomically write embedding progress to disk (write to a temp file, then
+    os.replace) so a crash mid-write never leaves a corrupt checkpoint that
+    silently fails to load on the next attempt.
+    """
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = checkpoint_path.with_name(checkpoint_path.stem + ".tmp.npz")
+    np.savez(tmp_path, embeddings=embeddings, next_index=np.array(next_index), fingerprint=np.array(fingerprint))
+    os.replace(tmp_path, checkpoint_path)
+
+
 def embed_chunks(
     model: SentenceTransformer,
     texts: list[str],
     batch_size: int = 64,
+    checkpoint_path: Path | None = None,
+    fingerprint: str | None = None,
 ) -> np.ndarray:
     """
     Embed a list of texts in batches.
 
     Returns a numpy array of shape (n_texts, embedding_dim), L2-normalized
     so that inner product == cosine similarity.
+
+    If checkpoint_path (and fingerprint) are given, progress is saved to disk
+    after every 5,000-text slice, so an interrupted run resumes instead of
+    re-embedding everything from scratch on retry — pass the same
+    checkpoint_path/fingerprint again to resume.
     """
     log.info("Embedding %d texts with batch_size=%d...", len(texts), batch_size)
 
-    embeddings = model.encode(
-        texts,
-        batch_size=batch_size,
-        show_progress_bar=True,
-        normalize_embeddings=True,  # L2-normalize for cosine similarity via inner product
-    )
+    slice_size = 5000
+    start_index = 0
+    embedded_chunks: list[np.ndarray] = []
 
+    if checkpoint_path is not None and fingerprint is not None:
+        resumed = _load_embed_checkpoint(checkpoint_path, fingerprint)
+        if resumed is not None:
+            prior_embeddings, start_index = resumed
+            embedded_chunks.append(prior_embeddings)
+
+    for i in range(start_index, len(texts), slice_size):
+        text_slice = texts[i : i + slice_size]
+        slice_embeddings = model.encode(
+            text_slice,
+            batch_size=batch_size,
+            show_progress_bar=True,
+            normalize_embeddings=True,  # L2-normalize for cosine similarity via inner product
+        ).astype(np.float32)
+        embedded_chunks.append(slice_embeddings)
+        next_index = i + len(text_slice)
+
+        if checkpoint_path is not None and fingerprint is not None:
+            _save_embed_checkpoint(checkpoint_path, np.concatenate(embedded_chunks, axis=0), next_index, fingerprint)
+            log.info("Checkpointed progress: %d/%d texts embedded.", next_index, len(texts))
+
+    embeddings = np.concatenate(embedded_chunks, axis=0) if embedded_chunks else np.zeros((0, 0), dtype=np.float32)
     log.info("Embeddings shape: %s", embeddings.shape)
-    return embeddings.astype(np.float32)
+    return embeddings
 
 
 def embed_chunks_openai(
     texts: list[str],
     model: str = "text-embedding-3-small",
     batch_size: int = 2048,
+    checkpoint_path: Path | None = None,
+    fingerprint: str | None = None,
 ) -> np.ndarray:
     """
     Embed texts using the OpenAI Embeddings API.
 
     Returns a numpy array of shape (n_texts, 1536), L2-normalized
     so that inner product == cosine similarity (matching the local model convention).
+
+    If checkpoint_path (and fingerprint) are given, progress is saved after
+    every batch — this matters here specifically because this path is a
+    sequence of network-bound API calls that can take hours for the full
+    corpus, and a rate limit / timeout / outage partway through would
+    otherwise lose all prior batches' work. Pass the same
+    checkpoint_path/fingerprint again to resume instead of re-calling the
+    API for already-embedded texts.
     """
-    import os
     import openai
     import tiktoken
 
@@ -91,7 +199,6 @@ def embed_chunks_openai(
         raise ValueError("OPENAI_API_KEY not set in environment / .env file")
 
     client = openai.OpenAI(api_key=api_key)
-    all_embeddings = []
 
     max_tokens = 8192
     enc = tiktoken.encoding_for_model(model)
@@ -107,16 +214,35 @@ def embed_chunks_openai(
     if truncated:
         log.warning("Truncated %d texts to %d tokens for OpenAI API", truncated, max_tokens)
 
-    log.info("Embedding %d texts via OpenAI '%s' (batch_size=%d)...", len(safe_texts), model, batch_size)
+    start_index = 0
+    all_embeddings: list[np.ndarray] = []
+    if checkpoint_path is not None and fingerprint is not None:
+        resumed = _load_embed_checkpoint(checkpoint_path, fingerprint)
+        if resumed is not None:
+            prior_embeddings, start_index = resumed
+            all_embeddings.append(prior_embeddings)
 
-    for i in range(0, len(safe_texts), batch_size):
+    total_batches = (len(safe_texts) + batch_size - 1) // batch_size
+    log.info(
+        "Embedding %d texts via OpenAI '%s' (batch_size=%d, %d batches)%s...",
+        len(safe_texts), model, batch_size, total_batches,
+        f" — resuming from text {start_index}" if start_index else "",
+    )
+
+    for i in range(start_index, len(safe_texts), batch_size):
         batch = safe_texts[i : i + batch_size]
         response = client.embeddings.create(model=model, input=batch)
-        batch_embs = [item.embedding for item in response.data]
-        all_embeddings.extend(batch_embs)
-        log.info("  Batch %d/%d done (%d texts)", i // batch_size + 1, (len(safe_texts) + batch_size - 1) // batch_size, len(batch))
+        batch_embs = np.array([item.embedding for item in response.data], dtype=np.float32)
+        all_embeddings.append(batch_embs)
+        next_index = i + len(batch)
+        log.info("  Batch %d/%d done (%d texts)", i // batch_size + 1, total_batches, len(batch))
 
-    embeddings = np.array(all_embeddings, dtype=np.float32)
+        if checkpoint_path is not None and fingerprint is not None:
+            # Checkpoint stores raw (pre-normalization) embeddings — normalization
+            # happens once below, after the full loop, so resuming never double-normalizes.
+            _save_embed_checkpoint(checkpoint_path, np.concatenate(all_embeddings, axis=0), next_index, fingerprint)
+
+    embeddings = np.concatenate(all_embeddings, axis=0) if all_embeddings else np.zeros((0, 1536), dtype=np.float32)
 
     # L2-normalize so inner product == cosine similarity
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
@@ -124,7 +250,7 @@ def embed_chunks_openai(
     embeddings = embeddings / norms
 
     log.info("OpenAI embeddings shape: %s", embeddings.shape)
-    return embeddings
+    return embeddings.astype(np.float32)
 
 
 def build_faiss_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
@@ -228,6 +354,37 @@ def save_metadata(chunks: list[dict], output_path: str) -> None:
     log.info("Saved metadata for %d chunks to %s", len(metadata), output_path)
 
 
+def save_index_info(
+    index_output_path: str,
+    embedding_model: str,
+    embedding_dim: int,
+    contextual: bool,
+    num_vectors: int,
+) -> None:
+    """
+    Save a small sidecar JSON recording which embedding model built this FAISS
+    index. QueryPipeline reads this at load time and refuses to start if the
+    embedding model it's about to use to embed queries doesn't match what
+    actually built the index — see pipeline/query.py::QueryPipeline.__init__.
+
+    This is a new sibling file only — it does NOT touch metadata.json's
+    existing flat-list-of-chunks schema.
+    """
+    info_path = Path(index_output_path).with_name(Path(index_output_path).stem + "_info.json")
+    info = {
+        "embedding_model": embedding_model,
+        "embedding_dim": embedding_dim,
+        "normalize": True,
+        "distance_metric": "ip",
+        "contextual": contextual,
+        "num_vectors": num_vectors,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(info_path, "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False, indent=2)
+    log.info("Saved index info sidecar to %s", info_path)
+
+
 def main():
     project_root = Path(__file__).resolve().parent.parent
     default_input = project_root / "data" / "processed" / "chunks.jsonl"
@@ -246,7 +403,10 @@ def main():
              "Alternatives: BAAI/bge-small-en-v1.5 (same 384 dims, higher MTEB), "
              "all-mpnet-base-v2 (768 dims, higher quality, slower)"
     )
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size for embedding (default: 64)")
+    parser.add_argument(
+        "--batch-size", type=int, default=None,
+        help="Batch size for embedding (default: 64 for local models, 2048 for --openai)"
+    )
     parser.add_argument(
         "--skip-contextual", action="store_true",
         help="Skip contextual enrichment (embed raw lyrics without metadata header). "
@@ -258,6 +418,12 @@ def main():
              "Requires OPENAI_API_KEY in .env. Outputs suffixed with _openai."
     )
     args = parser.parse_args()
+
+    if args.batch_size is None:
+        # OpenAI's embeddings endpoint comfortably handles large batches (up to a
+        # few thousand inputs/request); the local-model default of 64 was silently
+        # being reused for --openai runs, turning a ~86-call job into ~2,750 calls.
+        args.batch_size = 2048 if args.openai else 64
 
     MODEL_SUFFIXES = {
         "all-MiniLM-L6-v2": "",
@@ -320,16 +486,26 @@ def main():
         texts_for_embedding = [build_contextual_text(c) for c in chunks]
         log.info("Sample contextual text:\n%s", texts_for_embedding[0][:300])
 
+    # Model label + checkpoint/fingerprint computed up front (both embed
+    # functions and the index-info sidecar below need it)
+    model_label = "text-embedding-3-small" if args.openai else args.model
+    checkpoint_path = checkpoint_path_for(args.index_output)
+    fingerprint = embedding_fingerprint(texts_for_embedding, model_label, not args.skip_contextual)
+
     # Embed chunks
     if args.openai:
         log.info("Using OpenAI text-embedding-3-small")
-        embeddings = embed_chunks_openai(texts_for_embedding, batch_size=args.batch_size)
-        model_label = "text-embedding-3-small"
+        embeddings = embed_chunks_openai(
+            texts_for_embedding, batch_size=args.batch_size,
+            checkpoint_path=checkpoint_path, fingerprint=fingerprint,
+        )
     else:
         log.info("Loading model: %s", args.model)
         model = SentenceTransformer(args.model)
-        embeddings = embed_chunks(model, texts_for_embedding, batch_size=args.batch_size)
-        model_label = args.model
+        embeddings = embed_chunks(
+            model, texts_for_embedding, batch_size=args.batch_size,
+            checkpoint_path=checkpoint_path, fingerprint=fingerprint,
+        )
 
     # Build and save FAISS index
     index = build_faiss_index(embeddings)
@@ -343,6 +519,22 @@ def main():
     # Build and save BM25 index (uses original text, not contextualized)
     bm25 = build_bm25_index(texts_for_bm25)
     save_bm25_index(bm25, args.bm25_output)
+
+    # Save the model-identity sidecar QueryPipeline asserts against at load time
+    save_index_info(
+        args.index_output,
+        embedding_model=model_label,
+        embedding_dim=embeddings.shape[1],
+        contextual=not args.skip_contextual,
+        num_vectors=embeddings.shape[0],
+    )
+
+    # Everything above succeeded — safe to drop the embedding checkpoint now.
+    # Kept until this point (not right after embedding finishes) so a failure
+    # in the FAISS/metadata/BM25 writes still lets a re-run skip re-embedding.
+    if checkpoint_path.exists():
+        checkpoint_path.unlink()
+        log.info("Removed embedding checkpoint %s (run completed successfully).", checkpoint_path)
 
     # Summary
     log.info(

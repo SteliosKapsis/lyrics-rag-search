@@ -178,6 +178,13 @@ class QueryPipeline:
         log.info("Loading FAISS index from %s", self.index_path)
         self.index = faiss.read_index(self.index_path)
 
+        # Assert the index was actually built with this embedding model. Query
+        # and index embeddings from different models occupy incomparable vector
+        # spaces — mismatched retrieval degrades silently (no exception, just
+        # worse results), so this must fail loudly rather than proceed on a
+        # guess. See pipeline/embedding.py::save_index_info() for the sidecar.
+        self._assert_index_model_matches(self.index_path, self.embedding_model_name)
+
         # Load metadata
         with open(self.metadata_path, encoding="utf-8") as f:
             self.metadata = json.load(f)
@@ -218,6 +225,50 @@ class QueryPipeline:
         # Reranker loaded lazily on first use
         self._reranker = None
         self.reranker_model = reranker_model
+
+    def _assert_index_model_matches(self, index_path: str, embedding_model: str) -> None:
+        """
+        Read the model-identity sidecar written by pipeline/embedding.py's
+        save_index_info() and fail loudly if it's missing or doesn't match the
+        embedding model this pipeline is about to use to embed queries.
+
+        Query embeddings and index embeddings from different models occupy
+        incomparable vector spaces — this is the single highest-severity
+        failure mode in the pipeline, because a mismatch does not throw on
+        its own; it just quietly returns worse results.
+        """
+        info_path = Path(index_path).with_name(Path(index_path).stem + "_info.json")
+        if not info_path.exists():
+            raise ValueError(
+                f"No model-identity sidecar found for index '{index_path}' "
+                f"(expected '{info_path}'). This index predates the model-identity "
+                f"check and cannot be safely trusted to match embedding_model="
+                f"'{embedding_model}'. Re-run pipeline/embedding.py with the matching "
+                f"--model / --openai / --skip-contextual flags to regenerate it."
+            )
+
+        with open(info_path, encoding="utf-8") as f:
+            info = json.load(f)
+
+        recorded_model = info.get("embedding_model")
+        if recorded_model != embedding_model:
+            raise ValueError(
+                f"Embedding model mismatch for index '{index_path}': it was built "
+                f"with '{recorded_model}' but this QueryPipeline is configured for "
+                f"'{embedding_model}'. Query embeddings and index embeddings must "
+                f"come from the same model, or retrieval silently degrades. Pass "
+                f"embedding_model='{recorded_model}' or rebuild the index for "
+                f"'{embedding_model}'."
+            )
+
+        recorded_dim = info.get("embedding_dim")
+        if recorded_dim is not None and recorded_dim != self.index.d:
+            raise ValueError(
+                f"Embedding dimension mismatch for index '{index_path}': the sidecar "
+                f"records {recorded_dim} dimensions but the loaded FAISS index has "
+                f"{self.index.d}. The sidecar may be stale or hand-edited — "
+                f"re-run pipeline/embedding.py to regenerate the index and sidecar together."
+            )
 
     def _get_reranker(self):
         """Lazy-load the cross-encoder reranker on first use."""
