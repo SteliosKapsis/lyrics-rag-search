@@ -81,14 +81,20 @@ On success:
         "album": "1989",
         "release_date": "2014-10-27",
         "relevant_lyric": "[Verse 1]\nI stay out too late...",
+        "chunk_index": 2,
         "explanation": "The query directly quotes the opening verse."
       }
     ],
     "confidence": "high",
     "summary": "This is 'Shake It Off' by Taylor Swift (2014)."
-  }
+  },
+  "citation_checks": [
+    {"title": "Shake It Off", "artist": "Taylor Swift", "chunk_index": 2, "match_score": 1.0, "verified": true}
+  ]
 }
 ```
+
+`citation_checks` is the output of `verify_citations()` (see `Documentation/phase_4_query_pipeline.md`) — a best-effort check that each match's `chunk_index` is real and its `relevant_lyric` plausibly matches that chunk's actual text, not proof the citation is correct.
 
 Response AMQP headers:
 - `status: "ok"` — successful processing

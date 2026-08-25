@@ -28,6 +28,7 @@ Inputs:  data/processed/faiss.index + data/processed/metadata.json + data/proces
 """
 
 import argparse
+import difflib
 import json
 import logging
 import os
@@ -43,7 +44,7 @@ import numpy as np
 import requests
 from dotenv import load_dotenv
 from langfuse import get_client, observe, propagate_attributes
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
 # Load .env from project root
@@ -63,19 +64,30 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 class SongMatch(BaseModel):
     """A single song match from the LLM synthesis."""
-    title: str
-    artist: str
-    album: str | None = None
-    release_date: str | None = None
-    relevant_lyric: str       # most relevant excerpt
-    explanation: str           # why this matches the query
+    title: str = Field(..., description="The song's title, exactly as given in the retrieved excerpt.")
+    artist: str = Field(..., description="The artist, exactly as given in the retrieved excerpt.")
+    album: str | None = Field(None, description="The album, if given in the retrieved excerpt.")
+    release_date: str | None = Field(None, description="The release date, if given in the retrieved excerpt.")
+    relevant_lyric: str = Field(
+        ...,
+        description="The most relevant excerpt, quoted verbatim (or near-verbatim) from the "
+        "lyric excerpt text — not paraphrased — so it can be checked against the source chunk.",
+    )
+    chunk_index: int = Field(
+        ...,
+        description="The chunk_index shown in brackets next to the excerpt that relevant_lyric "
+        "was drawn from. Must be one of the chunk_index values actually shown for this song.",
+    )
+    explanation: str = Field(..., description="Why this song matches the user's query.")
 
 
 class LLMResponse(BaseModel):
     """Structured response from the LLM synthesis step."""
-    matches: list[SongMatch]  # ranked by relevance
-    confidence: Literal["high", "medium", "low"]  # constrained to 3 values
-    summary: str              # 1-2 sentence answer to the query
+    matches: list[SongMatch] = Field(..., description="Song matches, ranked by relevance (most relevant first).")
+    confidence: Literal["high", "medium", "low"] = Field(
+        ..., description="Overall confidence in these matches, given the retrieved excerpts.",
+    )
+    summary: str = Field(..., description="A 1-2 sentence answer to the user's query.")
 
 
 # Tool definition for Anthropic structured output via tool_use
@@ -92,7 +104,9 @@ and you will be given retrieved lyric excerpts from a database along with simila
 
 Your task:
 1. Identify the most likely matching song(s) from the retrieved excerpts.
-2. Show the most relevant lyric excerpt(s) that match the user's description.
+2. Show the most relevant lyric excerpt(s) that match the user's description, quoted \
+verbatim (or as close to verbatim as possible) from the excerpt text — not paraphrased. \
+Cite the chunk_index shown in brackets next to the excerpt you drew it from.
 3. For each match, provide: song title, artist, album, and release date.
 4. If multiple songs could match, rank them by relevance and explain why.
 5. If the similarity scores are low (below 0.3) or the excerpts don't clearly match \
@@ -129,12 +143,66 @@ def build_context(grouped_results: list[dict]) -> str:
             score_str = f"FAISS: {chunk['score']:.3f}"
             if "cross_encoder_score" in chunk:
                 score_str += f", Reranker: {chunk['cross_encoder_score']:.3f}"
-            parts.append(f"  [{score_str}]")
+            parts.append(f"  [{score_str}, chunk_index: {chunk['chunk_index']}]")
             parts.append(f"  {chunk['text']}")
             parts.append("")
         parts.append("")
 
     return "\n".join(parts)
+
+
+def verify_citations(llm_response: "LLMResponse", grouped_results: list[dict]) -> list[dict]:
+    """
+    Best-effort check that each SongMatch's cited chunk_index actually exists
+    among that song's retrieved chunks, and that relevant_lyric is plausibly
+    drawn from that chunk's real text (fuzzy substring match via stdlib
+    difflib — deliberately not rapidfuzz, which is excluded from the Docker
+    image this function runs inside via worker.py's query()/query_stream()
+    call path; difflib needs no extra dependency).
+
+    This is citation LINKING, not citation VERIFICATION by entailment — it
+    only checks relevant_lyric against its cited chunk, not the rest of the
+    response (summary, explanation). A paraphrased quote can legitimately
+    score low here even when the citation is otherwise correct; treat this
+    as a cheap fabrication signal, not proof of grounding.
+
+    Returns a list of {title, artist, chunk_index, match_score, verified} —
+    one entry per SongMatch in llm_response.matches, in the same order.
+    """
+    # Index grouped_results by (title, artist) -> {chunk_index: text}
+    chunks_by_song: dict[tuple[str, str], dict[int, str]] = {}
+    for song in grouped_results:
+        key = (song["title"], song["artist"])
+        chunks_by_song[key] = {c["chunk_index"]: c["text"] for c in song["chunks"]}
+
+    checks = []
+    for match in llm_response.matches:
+        song_chunks = chunks_by_song.get((match.title, match.artist), {})
+        chunk_text = song_chunks.get(match.chunk_index)
+
+        if chunk_text is None:
+            # Cited chunk_index doesn't exist among this song's retrieved chunks
+            # (out of range, or the LLM invented one) — never raise, just flag it.
+            checks.append({
+                "title": match.title, "artist": match.artist,
+                "chunk_index": match.chunk_index, "match_score": 0.0, "verified": False,
+            })
+            continue
+
+        score = difflib.SequenceMatcher(None, match.relevant_lyric.lower(), chunk_text.lower()).ratio()
+        checks.append({
+            "title": match.title, "artist": match.artist,
+            "chunk_index": match.chunk_index, "match_score": round(score, 3), "verified": score >= 0.5,
+        })
+
+    for check in checks:
+        if not check["verified"]:
+            log.warning(
+                "Citation could not be verified: '%s' by %s, chunk_index=%s (match_score=%.3f)",
+                check["title"], check["artist"], check["chunk_index"], check["match_score"],
+            )
+
+    return checks
 
 
 class QueryPipeline:
@@ -745,6 +813,11 @@ class QueryPipeline:
             llm_response = self.synthesize(query, grouped)
             log.info("LLM confidence: %s, matches: %d", llm_response.confidence, len(llm_response.matches))
 
+            # Best-effort check that each match's chunk_index citation is real and its
+            # relevant_lyric plausibly matches that chunk's actual text (see verify_citations
+            # docstring — a fabrication signal, not proof of grounding).
+            citation_checks = verify_citations(llm_response, grouped)
+
             lf.set_current_trace_io(
                 output={"confidence": llm_response.confidence, "num_matches": len(llm_response.matches)},
             )
@@ -753,6 +826,7 @@ class QueryPipeline:
                 "retrieval_results": grouped,
                 "llm_response": llm_response,
                 "hyde_hypothesis": hyde_hypothesis,
+                "citation_checks": citation_checks,
             }
 
     @observe(name="rag-query-stream")
@@ -778,6 +852,12 @@ class QueryPipeline:
             first = next(stream)  # dict with retrieval_results
             for token in stream:  # str tokens from LLM
                 print(token, end="")
+
+        Note: unlike query(), this does not compute citation_checks — the tokens
+        here are streamed straight from the LLM and never assembled into an
+        LLMResponse inside this generator. Once the caller has collected and
+        parsed the full response, call verify_citations(llm_response,
+        first["retrieval_results"]) directly to get the same check.
         """
         lf = get_client()
         log.info(

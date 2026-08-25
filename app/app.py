@@ -19,7 +19,7 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.query import LLMResponse, QueryPipeline  # noqa: E402
+from pipeline.query import LLMResponse, QueryPipeline, verify_citations  # noqa: E402
 
 
 # Map embedding model names to their index file suffixes
@@ -298,6 +298,13 @@ def main():
     # --- LLM Response display ---
     st.markdown("### Answer")
 
+    # Best-effort check that each match's cited chunk_index is real and its
+    # relevant_lyric plausibly matches that chunk's actual text — see
+    # verify_citations' docstring (a fabrication signal, not proof of grounding).
+    citation_checks = (
+        verify_citations(llm_response, retrieval_data["retrieval_results"]) if llm_response else []
+    )
+
     with st.container(border=True):
         if llm_response:
             badge_colors = {"high": "green", "medium": "orange", "low": "red"}
@@ -305,10 +312,14 @@ def main():
             st.markdown(f"**Confidence:** :{color}[{llm_response.confidence}]")
             st.markdown(llm_response.summary)
             if llm_response.matches:
-                for match in llm_response.matches:
+                for match, check in zip(llm_response.matches, citation_checks):
                     st.markdown(f"**{match.title}** by {match.artist}")
                     if match.relevant_lyric:
                         st.markdown(f"> {match.relevant_lyric}")
+                    caption = f"chunk #{match.chunk_index}"
+                    if not check["verified"]:
+                        caption += " — could not verify this citation against the source chunk"
+                    st.caption(caption)
                     st.caption(match.explanation)
         else:
             st.caption("No structured response available.")

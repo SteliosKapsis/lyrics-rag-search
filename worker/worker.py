@@ -73,6 +73,7 @@ def on_request(ch, method, props, body):
             "retrieval_results": result["retrieval_results"],
             "hyde_hypothesis": result["hyde_hypothesis"],
             "llm_response": result["llm_response"].model_dump(),
+            "citation_checks": result.get("citation_checks", []),
         }, default=str)
 
         print(f"[Worker] Done. Songs found: {len(result['retrieval_results'])}")

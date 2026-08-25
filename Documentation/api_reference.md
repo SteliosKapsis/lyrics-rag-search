@@ -18,8 +18,13 @@ Represents a single matched song in the LLM response.
 | `artist` | `str` | Artist name |
 | `album` | `str \| None` | Album name (optional) |
 | `release_date` | `str \| None` | ISO-format date string (optional) |
-| `relevant_lyric` | `str` | Excerpt from the retrieved chunk most relevant to the query |
+| `relevant_lyric` | `str` | Excerpt from the retrieved chunk most relevant to the query, quoted (near-)verbatim so it stays checkable against the source chunk |
+| `chunk_index` | `int` | The `chunk_index` of the specific chunk `relevant_lyric` was drawn from — binds the citation to a real, checkable chunk instead of leaving it as free text. Required. |
 | `explanation` | `str` | LLM-generated explanation of why this song matches |
+
+Every field carries a Pydantic `Field(description=...)`, since `RESPONSE_TOOL`'s schema is generated live from this model and that description text is exactly what the LLM sees as its instructions for filling each field.
+
+**Citation linking, not verification:** `chunk_index` only guarantees the LLM *named* a chunk — it doesn't by itself prove `relevant_lyric` was actually drawn from that chunk's text. See `verify_citations()` below for the (best-effort, heuristic) check that closes that gap.
 
 #### `LLMResponse`
 
@@ -102,6 +107,7 @@ def query(
     "retrieval_results": list[dict],    # grouped by song, sorted by best_score
     "llm_response": LLMResponse,        # Pydantic model
     "hyde_hypothesis": str | None,
+    "citation_checks": list[dict],      # one entry per llm_response.matches, see verify_citations()
 }
 ```
 
@@ -150,6 +156,24 @@ Same parameters as `query()`.
 **Yields** (in order):
 1. A `dict` with keys `retrieval_results` and `hyde_hypothesis` (same structure as `query()` return)
 2. `str` tokens — JSON string fragments from the LLM. Concatenate all tokens and parse with `LLMResponse.model_validate_json()` or `json.loads()`
+
+Unlike `query()`, this does not return `citation_checks` — tokens here are streamed straight from the LLM and never assembled into an `LLMResponse` inside the generator. Once the caller has parsed the full response, call `verify_citations(llm_response, retrieval_results)` directly (see below) to get the same check — this is exactly what `app/app.py` does after collecting the stream.
+
+---
+
+#### `verify_citations`
+
+Best-effort check that each `SongMatch.chunk_index` in a parsed `LLMResponse` actually exists among that song's retrieved chunks, and that `relevant_lyric` plausibly matches that chunk's real text.
+
+```python
+def verify_citations(llm_response: LLMResponse, grouped_results: list[dict]) -> list[dict]
+```
+
+Returns one `{title, artist, chunk_index, match_score, verified}` dict per `SongMatch` in `llm_response.matches`, same order. `match_score` is a `difflib.SequenceMatcher` ratio (0–1) between `relevant_lyric` and the cited chunk's text — deliberately stdlib `difflib`, not `rapidfuzz`, since this runs inside `query()`/`query_stream()`'s call path in the `worker` Docker container, and `rapidfuzz` is excluded from `requirements-docker.txt`. `verified = match_score >= 0.5`.
+
+**This is citation *linking*, not citation *verification* by entailment** — it only checks `relevant_lyric` against its cited chunk, not the rest of the response (`summary`, `explanation`). A legitimately-correct citation can still score low here if the LLM paraphrased instead of quoting; treat `verified: False` as a cheap fabrication *signal*, not proof that the citation is wrong. Full claim-decomposition + entailment checking against every field is a larger, separate roadmap item (`Instructions/08-roadmap-open-questions.md`), not what this function does.
+
+A `chunk_index` that doesn't exist among the song's retrieved chunks (out of range, or invented by the LLM) is flagged `verified: False` with `match_score: 0.0` — never raises.
 
 ---
 

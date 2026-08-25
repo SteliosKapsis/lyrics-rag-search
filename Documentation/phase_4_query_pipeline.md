@@ -105,6 +105,7 @@ Returns a dict:
                 "album": "30",
                 "release_date": "2021-10-15",
                 "relevant_lyric": "Go easy on me, baby...",
+                "chunk_index": 5,
                 "explanation": "This matches the query about letting someone go."
             }
         ],
@@ -112,6 +113,9 @@ Returns a dict:
         "summary": "Based on the retrieved lyrics..."
     },
     "hyde_hypothesis": "A melancholy ballad drenched in rain imagery, evoking loneliness and quiet longing...",  # or None
+    "citation_checks": [
+        {"title": "Easy On Me", "artist": "Adele", "chunk_index": 5, "match_score": 1.0, "verified": True},
+    ],
 }
 ```
 
@@ -185,7 +189,8 @@ class SongMatch(BaseModel):
     artist: str
     album: str | None
     release_date: str | None
-    relevant_lyric: str        # most relevant excerpt
+    relevant_lyric: str        # most relevant excerpt, quoted (near-)verbatim
+    chunk_index: int           # which retrieved chunk relevant_lyric was drawn from
     explanation: str            # why this matches the query
 
 class LLMResponse(BaseModel):
@@ -194,11 +199,19 @@ class LLMResponse(BaseModel):
     summary: str                # 1-2 sentence answer
 ```
 
+Every field carries a `Field(description=...)` — since `RESPONSE_TOOL`'s schema is generated live from these models via `LLMResponse.model_json_schema()`, that description text is literally the instruction the LLM sees for how to fill each field, not just documentation for humans.
+
 **Why structured output?** Free-text LLM responses require fragile string parsing to extract song matches, confidence levels, and excerpts. Structured output guarantees the response shape, enables programmatic confidence scoring, and makes the Streamlit display cleaner.
 
 **Anthropic implementation:** Uses tool_use — defines a tool whose `input_schema` matches the Pydantic model. Claude returns structured JSON as the tool call arguments.
 
 **Ollama implementation:** Uses the `format` parameter with the Pydantic model's JSON schema (`LLMResponse.model_json_schema()`), which forces Ollama to return conforming JSON.
+
+#### Citation linking (`chunk_index`) and best-effort verification
+
+`build_context()` labels each excerpt sent to the LLM with its `chunk_index` (e.g. `[FAISS: 0.812, chunk_index: 5]`), and the system prompt instructs the LLM to cite the `chunk_index` its `relevant_lyric` was drawn from, quoted close to verbatim rather than paraphrased. This turns `relevant_lyric` from an untraceable free-text quote into something bound to a specific, checkable chunk.
+
+`query()` calls `verify_citations(llm_response, grouped_results)` right after synthesis and returns the result as `citation_checks` (see the example response above). For each match it checks whether the cited `chunk_index` actually exists among that song's retrieved chunks, and fuzzy-compares `relevant_lyric` against that chunk's real text (stdlib `difflib.SequenceMatcher`, not `rapidfuzz` — this runs inside the Docker `worker` container, which excludes `rapidfuzz`). This is **citation linking, not full verification by entailment**: it only checks `relevant_lyric` itself, not `explanation` or `summary`, and a legitimately-correct but paraphrased quote can still score low. Treat `verified: False` as a cheap fabrication signal, not proof the citation is wrong. `query_stream()` does not compute this itself (tokens are streamed, never assembled into an `LLMResponse` server-side) — the caller calls `verify_citations()` once it has parsed the full streamed response, which is what `app/app.py` does.
 
 #### Modes
 
