@@ -21,6 +21,7 @@ Docker containerization of the Streamlit frontend for reproducible deployment an
    - `data/processed/faiss.index`
    - `data/processed/metadata.json`
    - `data/processed/bm25.pkl`
+   - `data/processed/faiss_info.json` — **required as of the model/index safety check** (see `Documentation/phase_3_embedding_indexing.md`). `QueryPipeline` refuses to load an index without this sidecar, so an index built before this check existed must be regenerated via `pipeline/embedding.py` — there is no bypass. If interrupted partway through (the local-model and `--openai` paths can both take a while over the full corpus), re-running the same command resumes from the last checkpoint instead of starting over.
 3. **API key** — copy `.env.example` to `.env` and add your `ANTHROPIC_API_KEY`
 
 ## Usage
@@ -134,7 +135,7 @@ Excluded from the Docker image:
 
 | Volume | Purpose | Persistence |
 |--------|---------|-------------|
-| `./data/processed` (bind) | FAISS index, BM25 index, metadata — mounted read-only | Host filesystem |
+| `./data/processed` (bind) | FAISS index, BM25 index, metadata, model-identity sidecar (`*_info.json`) — mounted read-only | Host filesystem |
 | `hf-cache` (named) | HuggingFace model cache (~80-400MB depending on model) | Persists across restarts |
 | `ollama-models` (named) | Ollama model files (~4GB for Llama 3) | Persists across restarts |
 

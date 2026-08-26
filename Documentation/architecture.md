@@ -254,14 +254,21 @@ class SongMatch(BaseModel):
     artist: str
     album: str | None
     release_date: str | None
-    relevant_lyric: str          # excerpt from retrieved chunk
+    relevant_lyric: str          # excerpt from retrieved chunk, quoted close to verbatim
     explanation: str             # why this song matches the query
+    chunk_index: int             # which retrieved chunk relevant_lyric was drawn from
 
 class LLMResponse(BaseModel):
     matches: list[SongMatch]
     confidence: Literal["high", "medium", "low"]
     summary: str                 # 1-2 sentence answer
+    abstained: bool = False            # True when nothing plausibly matched — correct, expected, not a failure
+    abstain_reason: str | None = None  # required when abstained=True (enforced by a model_validator)
 ```
+
+**Retrieval-gated abstention:** before the LLM is even called, `classify_retrieval_outcome()` checks the best retrieval score against `abstain_score_threshold`. If nothing was retrieved (`"empty"`) or the best score falls short (`"low_relevance"`), `query()`/`query_stream()` construct `LLMResponse(abstained=True, ...)` directly and skip the LLM call entirely — the cheapest, safest way to avoid fabricating a match on unpromising input. Only a `"sufficient"` outcome reaches the LLM, whose own system prompt also instructs it to set `abstained=True` if the retrieved excerpts still don't clearly support a match. See `Documentation/phase_4_query_pipeline.md` for the full gating logic and the threshold's placeholder-tuning caveat.
+
+**Citation linking:** each excerpt sent to the LLM is labeled with its `chunk_index`, and the LLM is instructed to cite the `chunk_index` its `relevant_lyric` was drawn from. `query()` then runs `verify_citations()` (stdlib `difflib`-based fuzzy match, not proof of grounding) against the actual chunk text and returns the result as `citation_checks`. See `Documentation/phase_4_query_pipeline.md` and `Documentation/api_reference.md`.
 
 ---
 

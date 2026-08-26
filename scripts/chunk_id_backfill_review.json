@@ -1,0 +1,752 @@
+[
+  {
+    "query": "never gonna give you up never gonna let you down",
+    "expected_title": "Never Gonna Give You Up",
+    "expected_artist": "Rick Astley",
+    "type": "direct",
+    "matched_chunk_index": 1,
+    "match_score": 97.9,
+    "status": "ok",
+    "chunk_text_preview": "[Pre-Chorus] + [Chorus]\nI just wanna tell you how I'm feeling\nGotta make you understand\n\nNever gonna give you up\nNever gonna let you down\nNever gonna run around\nAnd desert you\nNever gonna make you cry"
+  },
+  {
+    "query": "I came in like a wrecking ball",
+    "expected_title": "Wrecking Ball",
+    "expected_artist": "Miley Cyrus",
+    "type": "direct",
+    "matched_chunk_index": 2,
+    "match_score": 100.0,
+    "status": "ok",
+    "chunk_text_preview": "[Chorus]\nI came in like a wrecking ball\nI never hit so hard in love\nAll I wanted was to break your walls\nAll you ever did was wreck me\nYeah, you, you wreck me"
+  },
+  {
+    "query": "is this the real life is this just fantasy",
+    "expected_title": "Bohemian Rhapsody",
+    "expected_artist": "Queen",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 100.0,
+    "status": "ok",
+    "chunk_text_preview": "[Intro]\nIs this the real life? Is this just fantasy?\nCaught in a landslide, no escape from reality\nOpen your eyes, look up to the skies and see\nI'm just a poor boy, I need no sympathy (Ooh, poor boy)\n"
+  },
+  {
+    "query": "just a small town girl living in a lonely world",
+    "expected_title": "Don’t Stop Believin’",
+    "expected_artist": "Glee Cast",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 97.9,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1: Finn, \nRachel]\nJust a small town girl, livin' in a lonely world\nShe took the midnight train goin' anywhere\nJust a city boy, born and raised in South Detroit\nHe took the midnight train goin' "
+  },
+  {
+    "query": "hello from the other side I must have called a thousand times",
+    "expected_title": "Hello",
+    "expected_artist": "Adele",
+    "type": "direct",
+    "matched_chunk_index": 1,
+    "match_score": 93.4,
+    "status": "ok",
+    "chunk_text_preview": "[Pre-Chorus] + [Chorus]\nThere's such a difference between us\nAnd a million miles\n\nHello from the other side\nI must've called a thousand times\nTo tell you I'm sorry for everything that I've done\nBut wh"
+  },
+  {
+    "query": "you are my fire the one desire",
+    "expected_title": "I Want It That Way",
+    "expected_artist": "Backstreet Boys",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 96.7,
+    "status": "ok",
+    "chunk_text_preview": "[Intro: Aj] + [Verse 1: Brian] + [Verse 2: Nick]\nYeah\n\nYou are my fire\nThe one desire\nBelieve when I say\nI want it that way\n\nBut we are two worlds apart\nCan't reach to your heart\nWhen you say\nThat I w"
+  },
+  {
+    "query": "look if you had one shot or one opportunity to seize everything you ever wanted",
+    "expected_title": "Lose Yourself",
+    "expected_artist": "Eminem",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 98.7,
+    "status": "ok",
+    "chunk_text_preview": "[Intro]\nLook, if you had one shot or one opportunity\nTo seize everything you ever wanted in one moment\nWould you capture it or just let it slip?\nYo"
+  },
+  {
+    "query": "pop song where she feels pretty without makeup and her heart races",
+    "expected_title": "Teenage Dream",
+    "expected_artist": "Katy Perry",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 53.8,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nYou think I'm pretty without any makeup on\nYou think I'm funny when I tell the punch line wrong\nI know you get me, so I let my walls come down, down\nBefore you met me, I was alright\nBut thin"
+  },
+  {
+    "query": "inspirational song about keeping your head up when things are bad",
+    "expected_title": "Keep Your Head Up",
+    "expected_artist": "Andy Grammer",
+    "type": "semantic",
+    "matched_chunk_index": 1,
+    "match_score": 56.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Pre-Chorus] + [Chorus]\nOh, you turn out fine\nFine, oh, you turn out fine\n\nBut you gotta keep your head up, oh, oh\nAnd you can let your hair down, ay, ay\nYou gotta keep your head up, oh, oh\nAnd you ca"
+  },
+  {
+    "query": "hip hop song bragging about staying humble, telling everyone to sit down",
+    "expected_title": "HUMBLE.",
+    "expected_artist": "Kendrick Lamar",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 47.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Intro] + [Verse 1]\nNobody pray for me\nIt been that day for me\nWay (Yeah, yeah)\n\nAyy, I remember syrup sandwiches and crime allowances\nFinesse a nigga with some counterfeits, but now I'm countin’ this"
+  },
+  {
+    "query": "rock song about a small town and growing up there",
+    "expected_title": "Small Town",
+    "expected_artist": "John Mellencamp",
+    "type": "semantic",
+    "matched_chunk_index": 6,
+    "match_score": 59.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 6] + [Outro]\nWell, I was born in a small town\nAnd I can breathe in a small town\nGonna die in this small town\nOh, that's probably where they'll bury me (Yeah)\n\nOoh, yeah, yeah\nOh yeah\nOoh yeah, "
+  },
+  {
+    "query": "duet about dreaming of losing your love, walking on moonlight then suddenly alone",
+    "expected_title": "Like I’m Gonna Lose You",
+    "expected_artist": "Meghan Trainor",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 55.0,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1: Meghan Trainor]\nI found myself dreamin'\nIn silver and gold\nLike a scene from a movie\nThat every broken heart knows\nWe were walkin' on moonlight\nAnd you pulled me close\nSplit second and you d"
+  },
+  {
+    "query": "country song about wanting one more day with someone",
+    "expected_title": "One More Day",
+    "expected_artist": "Diamond Rio",
+    "type": "semantic",
+    "matched_chunk_index": 2,
+    "match_score": 62.8,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 2]\nFirst thing I'd do is pray for time to crawl\nI'd unplug the telephone and keep the TV off\nI'd hold you every second\nSay a million I love you's\nThat's what I'd do with one more day with you"
+  },
+  {
+    "query": "R&B song where the guy remembers his truck rims and stuff but forgot about his girl",
+    "expected_title": "Put That Woman First",
+    "expected_artist": "Jaheim",
+    "type": "semantic",
+    "matched_chunk_index": 2,
+    "match_score": 51.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 2]\nIf it wasn't for the make up on my shirt\nStill I'd be chasin' skirts then (​​I could remember)\nAnd if it wasn't for that fight last night\nYou smashin' out my headlights then (​​I could remem"
+  },
+  {
+    "query": "the song that goes like butterfly something sugar baby",
+    "expected_title": "Butterfly",
+    "expected_artist": "Crazy Town",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 60.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus: Shifty Shellshock, Shifty Shellshock & Bret \"Epic\" Mazur]\nCome my lady, come-come my lady\nYou're my butterfly, sugar baby\nCome my lady, come-come my lady\nYou're my butterfly, sugar baby"
+  },
+  {
+    "query": "song about good vibrations with a funky beat",
+    "expected_title": "Good Vibrations",
+    "expected_artist": "Marky Mark and the Funky Bunch",
+    "type": "partial",
+    "matched_chunk_index": 1,
+    "match_score": 63.6,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus: Loleatta Holloway]\nIt's such a good vibration\nIt's such a sweet sensation\nIt's such a good vibration\nIt's such a sweet sensation"
+  },
+  {
+    "query": "90s song where she sings dreams can come true, move a step closer",
+    "expected_title": "Dreams",
+    "expected_artist": "Gabrielle",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 67.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Intro] + [Verse 1]\nThey can come true, yeah\nThey can come true\n\nMove a step closer, you know that I want you\nI can tell by your eyes that you want me too\nJust a question of time, I knew we'd be toget"
+  },
+  {
+    "query": "R&B song about getting in my feelings and reminiscing, wanting it to be different next time",
+    "expected_title": "Exchange",
+    "expected_artist": "Bryson Tiller",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 59.6,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Intro: Envyi] + [Verse 1: Bryson Tiller]\nOh, oh-oh, ye-eah, oh-oh\nOh, oh-oh, ye-eah, oh-oh\n\nThis what happen when I think 'bout you (Yeah)\nI get in my feelings, yeah, I start reminiscing, yeah\nNext t"
+  },
+  {
+    "query": "rock song where they sing about the other side",
+    "expected_title": "The Other Side",
+    "expected_artist": "Aerosmith",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 66.7,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Intro] + [Chorus]\nMm-mm-mm, mm-mm-mm\nMm-mm-mm, mm-mm-mm-mm-mm (Yeah!)\n\nLovin' you has go to be (Take me to the other side)\nLike the devil and the deep blue sea (Take me to the other side)\nForget abou"
+  },
+  {
+    "query": "reggae song about needing someone like water for my soul when it gets thirsty",
+    "expected_title": "King Without A Crown",
+    "expected_artist": "Matisyahu",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 75.3,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nYou're all that I have and you're all that I need\nEach and every day I pray to get to know you, please\nI want to be close to you, yes I'm so hungry\nYou're like water for my soul when it gets"
+  },
+  {
+    "query": "emotional ballad about no gold in this river, drowning in silence",
+    "expected_title": "Easy On Me",
+    "expected_artist": "Adele",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 56.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nThere ain't no gold in this river\nThat I've been washin' my hands in forever\nI know there is hope in these waters\nBut I can't bring myself to swim\nWhen I am drowning in this silence\nBaby, le"
+  },
+  {
+    "query": "country ballad about wishing for just one tear running down your cheek",
+    "expected_title": "Cry",
+    "expected_artist": "Faith Hill",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 68.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nIf I had just one tear runnin' down your cheek\nMaybe I could cope, maybe I'd get some sleep\nIf I had just one moment at your expense\nMaybe all my misery would be well spent, yeah"
+  },
+  {
+    "query": "upbeat pop song about being hooked on someone from the start, no one else compares",
+    "expected_title": "Ain’t No Other Man",
+    "expected_artist": "Christina Aguilera",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 54.3,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Intro] + [Verse 1]\nHey, yeah\n(Do your thang, honey)\n\nI could feel it from the start\nCouldn't stand to be apart\nSomethin' 'bout you caught my eye\nSomethin' moved me deep inside, yeah\nI don't know what"
+  },
+  {
+    "query": "song with fever in it, blues rock style",
+    "expected_title": "Fever",
+    "expected_artist": "The Black Keys",
+    "type": "ambiguous",
+    "matched_chunk_index": 2,
+    "match_score": 52.6,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 2]\nFever, can you hear me?\nFever, can you hear me?\nYou shook me like I never been\nNow show me how to live again\nIt used to be a blessing\nBut fever's got me stressing\nRealize I am to blame\nBut f"
+  },
+  {
+    "query": "everybody's free to feel good dance song from the 90s",
+    "expected_title": "Everybody’s Free (To Feel Good)",
+    "expected_artist": "Rozalla",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 73.1,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Intro] + [Verse 1]\nEverybody's free to feel good\nEverybody's free to feel good\nEverybody's free\n\nBrother and sister together we'll make it through\nSome day a spirit will lift you and take you there\nI"
+  },
+  {
+    "query": "dance with me under the diamonds see me like breath in the cold",
+    "expected_title": "Anyone",
+    "expected_artist": "Justin Bieber",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 98.4,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nDance with me under the diamonds\nSee me like breath in the cold\nSleep with me here in the silence\nCome kiss me, silver and gold"
+  },
+  {
+    "query": "you're on the phone with your girlfriend she's upset she's going off about something that you said",
+    "expected_title": "You Belong With Me (Taylor’s Version)",
+    "expected_artist": "Taylor Swift",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 97.9,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nYou're on the phone with your girlfriend, she's upset\nShe's goin' off about something that you said\n'Cause she doesn't get your humor like I do\nI'm in my room, it's a typical Tuesday night\nI"
+  },
+  {
+    "query": "I remembered black skies the lightning all around me",
+    "expected_title": "New Divide",
+    "expected_artist": "Linkin Park",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 98.1,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nI remembered black skies\nThe lightning all around me\nI remembered each flash\nAs time began to blur\nLike a startling sign\nThat fate had finally found me"
+  },
+  {
+    "query": "the lights are on but you're not home your mind is not your own your heart sweats your body shakes",
+    "expected_title": "Addicted to Love",
+    "expected_artist": "Robert Palmer",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 97.9,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nThe lights are on, but you're not home\nYour mind is not your own\nYour heart sweats, your body shakes\nAnother kiss is what it takes"
+  },
+  {
+    "query": "I had a dream so big and loud I jumped so high I touched the clouds",
+    "expected_title": "Best Day of My Life",
+    "expected_artist": "American Authors",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 98.5,
+    "status": "ok",
+    "chunk_text_preview": "[Intro] + [Verse 1]\n(Woo, woo-ooh, woo)\n\nI had a dream so big and loud\nI jumped so high, I touched the clouds\nWoah-oh-oh-oh, oh, oh-oh, oh (Woah-oh-oh-oh, oh, oh-oh, oh)\nI stretched my hands out to th"
+  },
+  {
+    "query": "she moves like she don't care smooth as silk cool as air",
+    "expected_title": "Maria",
+    "expected_artist": "Blondie",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 98.2,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nShe moves like she don't care\nSmooth as silk, cool as air\nOoh, it makes you wanna cry\nShe doesn't know your name\nAnd your heart beats like a subway train\nOoh, it makes you wanna die"
+  },
+  {
+    "query": "notice me take my hand why are we strangers when our love is strong",
+    "expected_title": "Everytime",
+    "expected_artist": "Britney Spears",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 94.0,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1] + [Pre-Chorus]\nNotice me\nTake my hand\nWhy are we\nStrangers when\n\nOur love is strong?\nWhy carry on without me?"
+  },
+  {
+    "query": "I don't wanna hear about it anymore it's a shame I've got to live without you anymore there's a fire in my heart",
+    "expected_title": "High Enough",
+    "expected_artist": "Damn Yankees",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 98.1,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nI don't wanna hear about it anymore\nIt's a shame I've got to live without you anymore\nThere's a fire in my heart\nA pounding in my brain\nIt's driving me crazy"
+  },
+  {
+    "query": "on a cold winter morning in the time before the light in flames of death's eternal reign",
+    "expected_title": "Through the Fire and Flames",
+    "expected_artist": "DragonForce",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 97.7,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nOn a cold winter morning\nIn the time before the light\nIn flames of Death's eternal reign\nWe ride towards the fight\nWhen the darkness has fallen down\nAnd the times are tough, alright\nThe soun"
+  },
+  {
+    "query": "I know it's been some time but there's something on my mind since that cold November day",
+    "expected_title": "Where Do Broken Hearts Go",
+    "expected_artist": "Whitney Houston",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 79.1,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI know it's been some time\nBut there's something on my mind\nYou see, I haven't been the same\nSince that cold November day\nWe said we needed space\nBut all we found was an empty place\nAnd the "
+  },
+  {
+    "query": "afraid to lose control and caught up in this world I've wasted time I've wasted breath",
+    "expected_title": "Come with Me Now",
+    "expected_artist": "KONGOS",
+    "type": "direct",
+    "matched_chunk_index": 1,
+    "match_score": 97.6,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nAfraid to lose control\nAnd caught up in this world\nI've wasted time, I've wasted breath\nI think I've thought myself to death\nI was born without this fear\nNow only this seems clear\nI need to "
+  },
+  {
+    "query": "I'm driving black on black just got my license back I got this feeling in my veins this train is coming off the track",
+    "expected_title": "Animals",
+    "expected_artist": "Nickelback",
+    "type": "direct",
+    "matched_chunk_index": 0,
+    "match_score": 98.3,
+    "status": "ok",
+    "chunk_text_preview": "[Verse 1]\nI, I'm driving black on black\nJust got my license back\nI got this feeling in my veins this train is coming off the track\nI'll ask polite if the devil needs a ride\nBecause the angel on my rig"
+  },
+  {
+    "query": "country song where a girl blows in like a hurricane in a summer sun dress",
+    "expected_title": "Storm Warning",
+    "expected_artist": "Hunter Hayes",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 58.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nShe rolled in from the west in a summer sun dress\nHotter than the heat in July\nWith her wind-blown hair, it just wasn't fair\nThe way she was blowin' my mind\nHave you ever noticed every hurri"
+  },
+  {
+    "query": "rock ballad about losing someone perfect and only seeing them in dreams now",
+    "expected_title": "I’ll See You in My Dreams",
+    "expected_artist": "GIANT",
+    "type": "semantic",
+    "matched_chunk_index": 3,
+    "match_score": 51.1,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Pre-Chorus] + [Chorus]\nYou keep comin'\nYou keep comin' back\nYou keep comin' back for more\n\nI'll see you in my dreams\nThere we'll be safe tonight\nFrom the lonely days of memories\nI'll see you in my dr"
+  },
+  {
+    "query": "love song about belonging together like the open seas and shores",
+    "expected_title": "We Belong Together",
+    "expected_artist": "Gavin DeGraw",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 80.3,
+    "status": "ok",
+    "chunk_text_preview": "[Chorus]\nWe belong together\nLike the open seas and shores\nWedded by the planet force\nWe've all been spoken for"
+  },
+  {
+    "query": "pop song about a summer romance with kisses on your body and tangled in the sheets",
+    "expected_title": "Summer of Love",
+    "expected_artist": "Shawn Mendes",
+    "type": "semantic",
+    "matched_chunk_index": 4,
+    "match_score": 57.3,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Post-Chorus] + [Bridge]\nLa-la-love\nLa-la-love, yeah (Oh)\nIt was the summer of\nLa-la-love\nLa-la-love\n\nKisses on your body were like heaven, we were takin' it slow, yeah\nEntangled in the sheets until t"
+  },
+  {
+    "query": "hip hop song about making sacrifices and giving up free time for success",
+    "expected_title": "Sacrifices",
+    "expected_artist": "Big Sean",
+    "type": "semantic",
+    "matched_chunk_index": 1,
+    "match_score": 54.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus: Big Sean]\nI done made sacrifices (I, I)\nSo many sacrifices (Straight, straight up)\nI done gave up so much free time knowing time ain't free\nFuck it, I sacrificed it (Fuck it, I sacrificed it)"
+  },
+  {
+    "query": "R&B song where he wants to hold her and touch her and make her his woman tonight",
+    "expected_title": "Hold Me",
+    "expected_artist": "Teddy Pendergrass",
+    "type": "semantic",
+    "matched_chunk_index": 2,
+    "match_score": 66.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 2: Whitney Houston]\nI believe you when you say that you love me\nKnow that I won't take you for granted\nTonight the magic has begun\nSo won't you hold me, touch me?\nMake me your woman tonight"
+  },
+  {
+    "query": "country song about a house on a back road with a flag on the porch and a dog named Waylon",
+    "expected_title": "Down to the Honkytonk",
+    "expected_artist": "Jake Owen",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 77.5,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI got a house down a back road\nI got a flag on the front porch\nI got a dog named Waylon\nI got a driveway that needs pavin'\nI got a boat with a two stroke\nA couple guaranteed-to-make-ya-laugh"
+  },
+  {
+    "query": "rock song about gravity like a lunar landing and shutting the world away to drift to someone",
+    "expected_title": "Love Remains the Same",
+    "expected_artist": "Gavin Rossdale",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 63.0,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nA thousand times I've seen you standing\nGravity like a lunar landing\nMake me want to run 'til I find you\nI shut the world away from here\nDrift to you, you're all I hear\nEverything we know fa"
+  },
+  {
+    "query": "song about springtime feelings on a February morning in a courtyard with birds singing",
+    "expected_title": "As I Lay Me Down",
+    "expected_artist": "Sophie B. Hawkins",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 70.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nIt felt like springtime\nOn this February morning\nIn a courtyard\nBirds were singing your praise\nI'm still recalling things you said\nTo make me feel all right\nI carry them with me today now"
+  },
+  {
+    "query": "power metal song about riding towards the fight in flames through a cold winter morning",
+    "expected_title": "Through the Fire and Flames",
+    "expected_artist": "DragonForce",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 54.0,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nOn a cold winter morning\nIn the time before the light\nIn flames of Death's eternal reign\nWe ride towards the fight\nWhen the darkness has fallen down\nAnd the times are tough, alright\nThe soun"
+  },
+  {
+    "query": "pop song where she says she doesn't need your brand new Benz or your bougie friends",
+    "expected_title": "Sleazy (Remix 2.0) - Get Sleazier",
+    "expected_artist": "Kesha",
+    "type": "semantic",
+    "matched_chunk_index": 0,
+    "match_score": 75.8,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus: Ke$Ha]\nI don't need you or your brand new Benz\nOr your bougie friends\nI don't need love lookin' like diamonds\nLookin' like diamonds"
+  },
+  {
+    "query": "Kanye song about his mama being raised when clean water was only for fairer skin",
+    "expected_title": "New Slaves",
+    "expected_artist": "Kanye West",
+    "type": "semantic",
+    "matched_chunk_index": 1,
+    "match_score": 66.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1: Kanye West]\nMy mama was raised in the era when\nClean water was only served to the fairer skin\nDoin' clothes, you would've thought I had help\nBut they wasn't satisfied unless I picked the cot"
+  },
+  {
+    "query": "Taylor Swift song where she's in her room listening to music the other girl doesn't like",
+    "expected_title": "You Belong With Me (Taylor’s Version)",
+    "expected_artist": "Taylor Swift",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 55.8,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nYou're on the phone with your girlfriend, she's upset\nShe's goin' off about something that you said\n'Cause she doesn't get your humor like I do\nI'm in my room, it's a typical Tuesday night\nI"
+  },
+  {
+    "query": "that Nickelback song about driving with the devil and sneaking out",
+    "expected_title": "Animals",
+    "expected_artist": "Nickelback",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 57.6,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI, I'm driving black on black\nJust got my license back\nI got this feeling in my veins this train is coming off the track\nI'll ask polite if the devil needs a ride\nBecause the angel on my rig"
+  },
+  {
+    "query": "Whitney Houston song about needing space but finding an empty place and learning she needs him desperately",
+    "expected_title": "Where Do Broken Hearts Go",
+    "expected_artist": "Whitney Houston",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 59.4,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI know it's been some time\nBut there's something on my mind\nYou see, I haven't been the same\nSince that cold November day\nWe said we needed space\nBut all we found was an empty place\nAnd the "
+  },
+  {
+    "query": "song goes something like I wasted time I wasted breath I thought myself to death",
+    "expected_title": "Come with Me Now",
+    "expected_artist": "KONGOS",
+    "type": "partial",
+    "matched_chunk_index": 1,
+    "match_score": 78.8,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nAfraid to lose control\nAnd caught up in this world\nI've wasted time, I've wasted breath\nI think I've thought myself to death\nI was born without this fear\nNow only this seems clear\nI need to "
+  },
+  {
+    "query": "the one where he sings lay your head on my pillow and just relax relax relax",
+    "expected_title": "(Lay Your Head On My) Pillow",
+    "expected_artist": "Tony! Toni! Toné!",
+    "type": "partial",
+    "matched_chunk_index": 3,
+    "match_score": 82.4,
+    "status": "ok",
+    "chunk_text_preview": "So lay your head on my pillow\nAnd just relax, relax, relax ('Cause it was meant for you)\nLay your head on my pillow\nAnd just relax, relax, relax ('Cause it was made to groove)"
+  },
+  {
+    "query": "Elvis Costello song about writing a book and your dreamboat turning out to be a footnote",
+    "expected_title": "Everyday I Write the Book",
+    "expected_artist": "Elvis Costello",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 65.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Intro] + [Verse 1]\nOoh, ooh, ooh, ooh\nYeah\nOoh, ooh\n\nDon't tell me you don't know what love is\nWhen you're old enough to know better\nWhen you find strange hands in your sweater\nWhen your dreamboat tu"
+  },
+  {
+    "query": "Debbie Gibson song about broken hearts and broken dreams being over but now dreams can't come true",
+    "expected_title": "Foolish Beat",
+    "expected_artist": "Debbie Gibson",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 62.8,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nThere was a time when\nBroken hearts and broken dreams\nWere over\nThere was a place where\nAll you could do was\nWish on a four leaf clover\n\nBut now is a new time\nThere is a new place\nWhere drea"
+  },
+  {
+    "query": "that T-Pain song where he keeps saying I'm sprung she got me doing things I'd never do",
+    "expected_title": "I’m Sprung",
+    "expected_artist": "T-Pain",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 65.3,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus]\nI'm sprung\nDawg, she got me\nGot me doin' things I'll never do\nIf you ain't been I'm tellin' you\nI'm sprung (I'm sprung)\nDawg, she got me\nGot me doin' things I'll never do\nIf you ain't been I'"
+  },
+  {
+    "query": "Madonna song about celebration heard it through the grapevine are you drunk or sober",
+    "expected_title": "Celebration",
+    "expected_artist": "Madonna",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 76.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI think you wanna come over\nYeah, I heard it through the grapevine\nAre you drunk? Are you sober?\nThink about it, doesn't matter\nAnd if it makes you feel good, then I say do it\nI don't know w"
+  },
+  {
+    "query": "Pitbull and Shakira song about staring into your eyes for a lifetime get it started",
+    "expected_title": "Get It Started",
+    "expected_artist": "Pitbull",
+    "type": "partial",
+    "matched_chunk_index": 3,
+    "match_score": 56.6,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus: Shakira]\nEvery time I look into your eyes\nI feel like I could stare in them for a lifetime\nWe can get started for life (Tonight)\nFor life  (Tonight) for life (Tonight)\nWe can get started for "
+  },
+  {
+    "query": "song where the guy walks the streets at night can't sleep drinking too much wine burning up inside",
+    "expected_title": "Crazy About Her",
+    "expected_artist": "Rod Stewart",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 61.9,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI walk the streets at night\nUntil the morning light comes shining through\nCan't get a good night's sleep\nAin't been to work in weeks\nWhat am I gonna do?\nHelp me\nCan't get her off my mind\nI'm"
+  },
+  {
+    "query": "Linkin Park song about black skies and time began to blur like a startling sign",
+    "expected_title": "New Divide",
+    "expected_artist": "Linkin Park",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 68.4,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI remembered black skies\nThe lightning all around me\nI remembered each flash\nAs time began to blur\nLike a startling sign\nThat fate had finally found me"
+  },
+  {
+    "query": "Sabrina Carpenter song about maybe we could have been friends if I met you in another life",
+    "expected_title": "Skin",
+    "expected_artist": "Sabrina Carpenter",
+    "type": "partial",
+    "matched_chunk_index": 0,
+    "match_score": 79.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nMaybe we could've been friends\nIf I met you in another life\nMaybe then we could pretend\nThere's no gravity in the words we write\nMaybe you didn't mean it\nMaybe \"blonde\" was the only rhyme\nTh"
+  },
+  {
+    "query": "sad song about finding an empty place after needing space from someone",
+    "expected_title": "Where Do Broken Hearts Go",
+    "expected_artist": "Whitney Houston",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 57.1,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI know it's been some time\nBut there's something on my mind\nYou see, I haven't been the same\nSince that cold November day\nWe said we needed space\nBut all we found was an empty place\nAnd the "
+  },
+  {
+    "query": "rock song about overcoming fear and needing to fight and lose yourself tonight",
+    "expected_title": "Come with Me Now",
+    "expected_artist": "KONGOS",
+    "type": "ambiguous",
+    "matched_chunk_index": 1,
+    "match_score": 66.7,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nAfraid to lose control\nAnd caught up in this world\nI've wasted time, I've wasted breath\nI think I've thought myself to death\nI was born without this fear\nNow only this seems clear\nI need to "
+  },
+  {
+    "query": "love song about two hearts beating as one and holding someone tonight",
+    "expected_title": "Hold Me",
+    "expected_artist": "Teddy Pendergrass",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 59.4,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1: Teddy Pendergrass]\nI'll hold you, and touch you\nAnd make you my woman\nI'll give you my love with sweet surrender\nTonight our hearts will beat as one\nAnd I will hold you, touch you\nAnd make y"
+  },
+  {
+    "query": "catchy song about being sprung and doing crazy things for someone you love",
+    "expected_title": "I’m Sprung",
+    "expected_artist": "T-Pain",
+    "type": "ambiguous",
+    "matched_chunk_index": 8,
+    "match_score": 54.1,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Outro]\nOoh\nShe got me doin', what I won't do\nGot me sprung and I told you\nYou don't agree with me\nIn the end you'll see that\nShe got you doin', what you won't do\nNow you're sprung and I told you\nS-P-"
+  },
+  {
+    "query": "emotional pop song about broken dreams that just can't come true anymore",
+    "expected_title": "Foolish Beat",
+    "expected_artist": "Debbie Gibson",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 59.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nThere was a time when\nBroken hearts and broken dreams\nWere over\nThere was a place where\nAll you could do was\nWish on a four leaf clover\n\nBut now is a new time\nThere is a new place\nWhere drea"
+  },
+  {
+    "query": "song about driving fast at night with the devil riding along asking for a ride",
+    "expected_title": "Animals",
+    "expected_artist": "Nickelback",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 52.6,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nI, I'm driving black on black\nJust got my license back\nI got this feeling in my veins this train is coming off the track\nI'll ask polite if the devil needs a ride\nBecause the angel on my rig"
+  },
+  {
+    "query": "hip hop track about coming from the bottom and buying a new Mercedes",
+    "expected_title": "Lord Knows",
+    "expected_artist": "Meek Mill",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 51.7,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus: Tory Lanez]\nAll I wanted was a new Mercedes\nBending off the corner whipping out the lot, I got it\nWomen love me but the niggas hate it\nBut how can I lose when I came from the bottom?\nLord kno"
+  },
+  {
+    "query": "romantic song about kissing someone before the lights go out, love glowing bright",
+    "expected_title": "XO",
+    "expected_artist": "John Mayer",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 58.8,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nYour love is bright as ever\nEven in the shadows\nBaby, kiss me\nBefore they turn the lights out\nYour heart is glowing\nAnd I'm crashing into you\nMhh baby, kiss me, kiss me\nBefore they turn the "
+  },
+  {
+    "query": "melancholy track about being so alone in a cold room needing somebody",
+    "expected_title": "At Night I Pray",
+    "expected_artist": "Wild Orchid",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 55.1,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1: Stacy]\nSo alone and this room feels so cold\nNo one to care and no one to hold\nYeah, the Lord knows\nThat I'm needing somebody like you\nJust like you"
+  },
+  {
+    "query": "country love song comparing love to how a car needs gasoline and crops need rain",
+    "expected_title": "I Got You",
+    "expected_artist": "Thompson Square",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 50.3,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1: Keifer Thompson]\nA car's got gasoline to run, down the road\nA crop's got rain, dirt and sun, to make 'em grow\nA song's got rhyme\nA clock's got time\nYou got me and"
+  },
+  {
+    "query": "song about hotels being made for two night stays but love ain't like that",
+    "expected_title": "Love Ain’t",
+    "expected_artist": "Eli Young Band",
+    "type": "ambiguous",
+    "matched_chunk_index": 0,
+    "match_score": 67.2,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Verse 1]\nHotels are made for two night stays, checking in and out\nMeeting strangers in the lobby\nWaking up and leaving town the next day\nBut love ain't\nAnd whiskey's poured for when you're bored\nAnd "
+  },
+  {
+    "query": "Tyler the Creator song about someone being so dangerous",
+    "expected_title": "A BOY IS A GUN*",
+    "expected_artist": "Tyler, The Creator",
+    "type": "ambiguous",
+    "matched_chunk_index": 1,
+    "match_score": 54.5,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus]\nYou so motherfuckin' dangerous\n(You started with a mere hello)\nYou so motherfuckin' dangerous\nYou got me by my neck (A boy is a gun)\nThat's why these other niggas lame to us\n'Cause all these "
+  },
+  {
+    "query": "upbeat song about living your best life and not going back and forth with anyone",
+    "expected_title": "Smile (Living My Best Life)",
+    "expected_artist": "Lil Duval",
+    "type": "ambiguous",
+    "matched_chunk_index": 1,
+    "match_score": 75.5,
+    "status": "low_confidence",
+    "chunk_text_preview": "[Chorus: Lil Duval]\nI'm living my best life, ain't goin back and forth with you niggas\nI'm living my best life, ain't goin back and forth with you niggas\nI'm living my best life, ain't goin back and f"
+  }
+]

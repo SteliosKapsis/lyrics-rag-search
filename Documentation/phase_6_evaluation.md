@@ -37,7 +37,7 @@ Each section is independently re-runnable. The notebook saves plot images to `no
 
 ## Test Set
 
-75 evaluation queries with ground truth (`expected_title`, `expected_artist`), covering four query types:
+`TEST_SET` (notebooks/evaluation.ipynb, Section 1.1) has 90 entries total — 75 answerable with ground truth (`expected_title`, `expected_artist`, `expected_chunk_index`) plus 15 deliberately unanswerable, covering five query types:
 
 | Type | Count | Description |
 |------|-------|-------------|
@@ -45,8 +45,15 @@ Each section is independently re-runnable. The notebook saves plot images to `no
 | Semantic/descriptive | 19 | User describes the song's theme, mood, or genre |
 | Partial recall | 19 | User vaguely remembers a lyric fragment |
 | Ambiguous | 18 | Query could plausibly match multiple songs |
+| Unanswerable | 15 | No correct answer exists in this corpus — tests whether the system abstains instead of guessing |
 
-Songs in the test set are drawn from the actual indexed dataset (confirmed present in `chunks.jsonl`). The test set was expanded from 25 to 75 queries for more robust statistical significance testing and reduced variance from individual query difficulty. Queries were iteratively refined during evaluation — generic descriptions were replaced with lyrics-grounded formulations, non-English songs were removed, and duplicate entries were replaced.
+Songs in the test set are drawn from the actual indexed dataset (confirmed present in `chunks.jsonl`). Retrieval-quality metrics (Recall@N, MRR, Hit Rate) are computed only over `ANSWERABLE_TEST_SET` (the 75 answerable entries) — the unanswerable subset has no correct chunk/song to rank against, and is instead scored separately via `evaluate_abstention()` (Section 7.9), which reports what fraction of them the system correctly declines to answer.
+
+**Version history** (`TEST_SET_VERSION`, printed with a content hash at Section 1.1's setup cell so a stale cached result can be detected by comparison):
+- *Undated, pre-versioning*: expanded from 25 to 75 queries for more robust statistical significance testing and reduced variance from individual query difficulty. Queries were iteratively refined during evaluation — generic descriptions were replaced with lyrics-grounded formulations, non-English songs were removed, and duplicate entries were replaced.
+- **v2.0.0**: added `expected_chunk_index` to all 75 answerable entries (chunk-level, not just song-level, ground truth — proposed by `scripts/backfill_chunk_ids.py`, a semi-automated fuzzy-match against the actual corpus, then manually reviewed against each candidate chunk's full text; 2 of the 71 non-"direct" proposals needed correcting from what the fuzzy match alone picked). Added 15 unanswerable entries (6 real songs confirmed absent from this corpus, 6 fabricated song/artist names, 3 off-topic non-song queries) so hallucination/abstention behavior is measurable for the first time — previously this golden set could not detect it at all, since every entry had a real answer.
+
+Neither versioned set has an enforcement mechanism preventing someone from editing `TEST_SET` without bumping `TEST_SET_VERSION` — the version string and hash are a convention, not a guarantee.
 
 ## Evaluation Metrics
 
@@ -331,3 +338,11 @@ Average MRR delta (contextual − non-contextual): **+0.067** for all-MiniLM-L6-
 **Data integrity:** Both indices were built from the same `chunks.jsonl` without re-running chunking or ingestion between builds, verified via `certutil -hashfile data\processed\chunks.jsonl MD5` before and after (identical hash confirms the metadata header was the only variable). The embedding script reads every chunk in file order with no filtering or randomness.
 
 Plot saved to `notebooks/contextual_ablation.png`.
+
+### Experiment 14: Abstention Rate on Unanswerable Queries (Section 7.9)
+
+Measures whether `pipeline/query.py`'s retrieval-gated abstention (added in the thesis-critical fix pass — see `Documentation/phase_4_query_pipeline.md`'s "gated by retrieval confidence" section) actually fires on the 15 `UNANSWERABLE_QUERIES` entries added to the golden set in v2.0.0.
+
+Unlike every other experiment in this notebook, this one calls `pipeline.query()` in full (not `skip_llm=True`) for each unanswerable entry, since the abstention decision is made inside `query()`/`query_stream()` itself — a retrieval-only run has nothing to observe it with. Reports `abstention_rate = fraction of unanswerable queries where LLMResponse.abstained is True`, plus a per-query breakdown flagging every case that did **not** abstain (a false negative for the gate — the pipeline confidently or not answered a query with no correct answer in this corpus).
+
+**Why it matters for the thesis:** this is the first experiment in this notebook that can say anything about hallucination behavior at all. Every other experiment's queries have a real answer; `abstention_rate` is the one number that reflects whether the system knows what it doesn't know. It is also the concrete measurement needed to actually tune `abstain_score_threshold` (currently a documented placeholder, `0.3`) — sweeping the threshold against this experiment's output is the follow-up this notebook makes possible but does not itself perform.

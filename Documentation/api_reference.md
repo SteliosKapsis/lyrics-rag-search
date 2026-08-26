@@ -199,7 +199,7 @@ Returns `("empty", 0.0)` if `raw_results` is empty, `("low_relevance", best_scor
 
 #### `retrieve`
 
-Dense-only FAISS retrieval. Traced as its own Langfuse span (`dense-retrieval`) — nests under `hybrid-fusion` when called from `retrieve_hybrid()`, or directly under `retrieval` when hybrid is off. See `langfuse.md`.
+Dense-only FAISS retrieval. Traced as its own Langfuse span (`dense-retrieval`) — nests under `hybrid-fusion` when called from `retrieve_hybrid()`, or directly under `retrieval` when hybrid is off.
 
 ```python
 def retrieve(query: str, top_k: int = 5) -> list[dict]
@@ -295,7 +295,7 @@ Loads cross-encoder model on instantiation. Supported models:
 
 #### `rerank`
 
-Traced as its own Langfuse span (`rerank`), nested under `retrieval` in the trace tree (see `langfuse.md`) — separates reranking latency and its candidate list from the dense/sparse/fusion stages that ran before it.
+Traced as its own Langfuse span (`rerank`), nested under `retrieval` in the trace tree — separates reranking latency and its candidate list from the dense/sparse/fusion stages that ran before it.
 
 ```python
 def rerank(
