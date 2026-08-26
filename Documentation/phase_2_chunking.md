@@ -64,9 +64,9 @@ The script uses a 6-step hybrid strategy:
 
 2. **Fallback for songs without headers** — if no `[Section]` markers exist, the lyrics are split on blank lines (stanza boundaries). This handles songs where Genius didn't annotate sections.
 
-3. **Split oversized sections** — sections exceeding `max_chunk_size` (default 400 chars) are broken further on stanza boundaries (blank lines within the section). If a section has no internal blank lines (e.g., a dense rap verse), it's kept intact rather than splitting mid-line.
+3. **Split oversized sections** — sections exceeding `max_chunk_size` (default 400 chars) are broken further, trying the coarsest boundary first: stanza (blank-line) breaks. If a stanza-level split would still leave a piece larger than `max_chunk_size` — or the section has no blank lines at all (e.g. a dense rap verse with no gap between bars) — it falls back to splitting on individual line boundaries instead. Only a section with no newlines anywhere (nothing left to split on without breaking mid-line) is kept intact as a single, still-oversized chunk; confirmed rare in practice (~30 sections in the current corpus). This two-tier fallback (stanza → line) is the same hierarchy-of-separators idea as a recursive character text splitter, applied to lyrics' own structural units instead of generic punctuation.
 
-4. **Merge undersized sections** — adjacent sections smaller than `min_chunk_size` (default 80 chars) are merged together. Headers are concatenated (e.g., `[Bridge] + [Chorus]`). The last section gets special handling — if it's too small, it's merged back into the previous chunk.
+4. **Merge undersized sections** — adjacent sections smaller than `min_chunk_size` (default 80 chars) are merged together, but *never* if doing so would push the result past `max_chunk_size` — a section that's too small to merge safely is left standalone instead. Headers are concatenated (e.g., `[Bridge] + [Chorus]`). The last section gets special handling — if it's too small, it's merged back into the previous chunk, subject to the same size guard. (This guard was added after discovering it was previously possible for several small stanzas to cascade-merge into a single chunk many times larger than `max_chunk_size` — see Design Decisions.)
 
 5. **Prepend section headers** — the section header (e.g., `[Verse 1]`) is prepended to the chunk text. This gives the embedding model structural context.
 
@@ -91,30 +91,33 @@ These parameters are deliberately exposed as CLI arguments so Phase 6 (evaluatio
 
 ## Test Results (5-song sample)
 
+Regenerated after the stanza→line fallback fix (see Design Decisions):
+
 ```
-5 songs → 37 chunks
-Average chunk size: 289 chars
-Min: 99 chars, Max: 1026 chars
+5 songs → 46 chunks
+Average chunk size: 237 chars
+Min: 73 chars, Max: 438 chars
 
 Chunks per song:
   Easy On Me:     6 chunks
-  STAY:           7 chunks
-  INDUSTRY BABY:  8 chunks
-  Fancy Like:     8 chunks
-  Bad Habits:     8 chunks
+  STAY:           8 chunks
+  INDUSTRY BABY: 13 chunks
+  Fancy Like:    10 chunks
+  Bad Habits:     9 chunks
 
 Size distribution:
-  <100 chars:   2 chunks
-  100-200:     14 chunks
-  200-400:     10 chunks
-  400-600:     10 chunks
-  600+:         1 chunk
+  <100 chars:    4 chunks
+  100-200:      19 chunks
+  200-400:      19 chunks
+  400-600:       4 chunks
+  600+:          0 chunks
 ```
 
-The single 1026-char chunk is a dense rap verse (Jack Harlow's verse in INDUSTRY BABY) with no internal stanza breaks. The splitter correctly keeps it intact rather than splitting mid-line.
+Previously, INDUSTRY BABY's Jack Harlow verse (no internal blank lines) produced a single 1026-char chunk, kept intact because the splitter had no fallback below stanza-level. It now falls back to line-level splitting for that verse instead, and the corpus-wide max chunk size dropped accordingly (see Design Decisions) — the "keep dense, blank-line-free verses intact" behavior described in older versions of this doc no longer applies except for the small number of sections with no newlines at all.
 
 ## Design Decisions
 
+- **Stanza→line fallback splitting (fixed, previously a silent gap)** — the original splitter tried only one fallback level (blank-line stanza boundaries) and gave up if that didn't yield multiple pieces, letting an oversized section through untouched. Checked against the full corpus: this let 17.5% of all chunks exceed `max_chunk_size`, with a worst case of 255,760 characters (later traced separately to non-song contamination in the source data, not this bug alone — see `phase_1.5_cleaning.md`). The fix adds a second-tier fallback to individual line boundaries, and also closes a related gap in the merge step (`merge_small_sections`) that could previously cascade-merge several undersized sections into something far larger than `max_chunk_size`, since it never checked the merged result's size. After both fixes, chunks exceeding `max_chunk_size` dropped to 9.6% of the corpus, and 99.7% of those are within 100 characters of the limit — an expected consequence of greedy line-packing, not a bug. Only sections with literally no newlines anywhere still pass through oversized (~30 in the current corpus).
 - **Characters, not tokens** — chunk sizes are measured in characters rather than tokens for simplicity and speed. The embedding model's tokenizer will handle the conversion. At ~4 chars/token, 400 chars ≈ 100 tokens, well within model limits.
 - **Section headers included in chunk text** — headers like `[Verse 1]` are prepended to the chunk. This gives the embedding model structural context (the model can learn that "chorus" text is repeated/central, "bridge" text is transitional, etc.).
 - **Merged headers use `+` notation** — when small sections are merged, their headers are combined: `[Bridge] + [Chorus]`. This preserves provenance.

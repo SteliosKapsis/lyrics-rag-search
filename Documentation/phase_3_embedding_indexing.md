@@ -72,7 +72,7 @@ The `text` field is included in metadata so the query pipeline (Phase 4) can dis
   "normalize": true,
   "distance_metric": "ip",
   "contextual": true,
-  "num_vectors": 175792,
+  "num_vectors": 130336,
   "built_at": "2026-08-25T15:44:05Z"
 }
 ```

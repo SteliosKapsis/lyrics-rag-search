@@ -105,6 +105,24 @@ Language detection preprocessing:
 
 **Note:** This check is currently dead code. `main()` calls `validate_entry(entry)` without passing `original_title`/`original_artist`, and both checks are gated on those parameters being truthy (`if original_artist and entry.get("artist"): ...`) — since they default to `None` and are never supplied, the checks never run. `artist_mismatch`/`title_mismatch` reasons can never actually appear in `validation_report.csv` as the pipeline is currently invoked. A future improvement would be to thread the original CSV values through to `validate_entry()` so this logic is reachable.
 
+## Post-Cleaning Data Quality Pass (`scripts/`)
+
+Two one-off scripts, run once against `data/raw/cleaned_lyrics.json` after Phase 1.5 and before Phase 2 (chunking), added after auditing the corpus and finding two issues this dead-code artist/title mismatch check would likely have caught, had it been reachable:
+
+### `scripts/dedupe_cleaned_lyrics.py`
+
+`cleaned_lyrics.json` had 19,320 entries but only 14,997 unique `(title, artist)` pairs — 4,323 songs present more than once, mostly Billboard chart entries that charted across multiple weeks/years and were kept every time they were re-encountered during ingestion. `pipeline/chunking.py` doesn't deduplicate, so every duplicate was chunked and indexed again, giving duplicated songs a disproportionate share of retrieval candidate slots relative to non-duplicated songs. Confirmed to affect 14 of the 75 golden-set answerable queries directly.
+
+Policy: keep the first occurrence per `(title, artist)` in file order, drop the rest. Backs up the pre-dedup file to `cleaned_lyrics.json.bak` before writing.
+
+### `scripts/filter_non_song_entries.py`
+
+Genius hosts far more than song lyrics — literary excerpts, movie/TV scripts, Supreme Court opinions, political speeches, "Listening Log" blog posts. The ingestion step's fuzzy search occasionally matched a Billboard title to one of these completely unrelated pages instead of the actual song (e.g. a Billboard entry ending up matched to a Marcel Proust chapter, or a McKinley State of the Union address). The lyrics-length distribution makes this easy to isolate: 95% of entries sit under ~4,500 characters, then a long tail runs from ~8,000 up to 825,000 characters that is, on inspection, entirely non-song content. There's also a handful of degenerate 1-11 character entries from deleted/removed Genius pages (`artist: "Deleted Artist"`).
+
+Policy: drop entries with `len(lyrics) > 8000` or `< 15` characters, or whose artist is a known deleted-page placeholder — 238 entries in total (230 too-long, 7 junk-artist, 1 too-short), verified against real short songs (e.g. "PPAP" at 202 chars) to confirm no legitimate song is anywhere near the cutoffs. Backs up to `cleaned_lyrics.json.prefilter_bak` and writes a full audit trail of every dropped entry to `scripts/non_song_entries_removed.json`.
+
+Run order: `dedupe_cleaned_lyrics.py` then `filter_non_song_entries.py`, both before `pipeline/chunking.py`. Final corpus: **14,759 songs** (down from the 14,997 previously documented throughout this project — that figure included both the duplicates and the non-song contamination).
+
 ## Design Decisions
 
 - **Flagged entries stay in output (except non-English)** — the validation report is for human review. Short lyrics or slight mismatches may still be valid and useful for the RAG pipeline.

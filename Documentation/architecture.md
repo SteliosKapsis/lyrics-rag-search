@@ -2,7 +2,7 @@
 
 ## Overview
 
-The system is a Retrieval-Augmented Generation (RAG) pipeline for lyrics-based song search. Given a natural-language query, it retrieves relevant song chunks from a corpus of ~175,000 lyrics segments and synthesizes a structured answer with song identification, confidence scoring, and textual explanations.
+The system is a Retrieval-Augmented Generation (RAG) pipeline for lyrics-based song search. Given a natural-language query, it retrieves relevant song chunks from a corpus of ~130,000 lyrics segments and synthesizes a structured answer with song identification, confidence scoring, and textual explanations.
 
 The codebase is organized into seven sequential pipeline stages, a Streamlit frontend, and an optional RabbitMQ worker for asynchronous query dispatch.
 
@@ -109,7 +109,7 @@ For each song:
 }
 ```
 
-**Result**: 175,792 chunks from 14,997 songs (avg ~11.7 chunks/song)
+**Result**: 130,336 chunks from 14,759 songs (avg ~8.8 chunks/song) — after a post-cleaning dedup + non-song-contamination filter pass (`scripts/dedupe_cleaned_lyrics.py`, `scripts/filter_non_song_entries.py`; see `Documentation/phase_1.5_cleaning.md`) and a chunking algorithm fix that closes a gap letting oversized chunks through (see `Documentation/phase_2_chunking.md`'s Design Decisions). Both changed the numbers from the 175,792/14,997 figure cited elsewhere in older material.
 
 ---
 

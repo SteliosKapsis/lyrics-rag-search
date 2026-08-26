@@ -75,12 +75,48 @@ def split_by_stanzas(text: str) -> list[str]:
     return [s.strip() for s in stanzas if s.strip()]
 
 
+def split_by_lines(text: str) -> list[str]:
+    """
+    Split text into individual non-blank lines.
+    Second-tier fallback for oversized sections with no blank-line
+    stanza breaks at all (common in rap verses transcribed as one
+    continuous block, with no empty line between bars) -- split_by_stanzas()
+    alone can't break these up, since it only splits on blank lines.
+    """
+    return [line.strip() for line in text.split("\n") if line.strip()]
+
+
+def _pack_pieces(pieces: list[str], sep: str, max_chunk_size: int) -> list[str]:
+    """
+    Greedily pack `pieces` (stanzas or lines) into strings joined by
+    `sep`, starting a new piece whenever adding the next one would push
+    the running total over max_chunk_size. Shared accumulation logic for
+    both the stanza-level and line-level fallbacks in split_large_section().
+    """
+    packed = [pieces[0]]
+    for piece in pieces[1:]:
+        candidate = packed[-1] + sep + piece
+        if len(candidate) > max_chunk_size and packed[-1]:
+            packed.append(piece)
+        else:
+            packed[-1] = candidate
+    return packed
+
+
 def merge_small_sections(
-    sections: list[dict], min_chunk_size: int
+    sections: list[dict], min_chunk_size: int, max_chunk_size: int
 ) -> list[dict]:
     """
     Merge adjacent sections that are below min_chunk_size (in characters).
     Preserves section headers by concatenating them.
+
+    Never merges if the result would exceed max_chunk_size -- the small
+    section is left standalone (under min_chunk_size) instead. Without
+    this guard, a run of several small stanzas could cascade-merge into
+    a chunk far larger than max_chunk_size, silently undoing the size
+    cap split_large_section() had already enforced (confirmed in
+    practice: 17.5% of chunks exceeded max_chunk_size before this check
+    was added).
     """
     if not sections:
         return sections
@@ -89,7 +125,8 @@ def merge_small_sections(
 
     for section in sections[1:]:
         prev = merged[-1]
-        if len(prev["text"]) < min_chunk_size:
+        merged_len = len(prev["text"]) + 2 + len(section["text"])  # +2 for the "\n\n" join
+        if len(prev["text"]) < min_chunk_size and merged_len <= max_chunk_size:
             # Merge with previous
             header_parts = []
             if prev["header"]:
@@ -105,58 +142,69 @@ def merge_small_sections(
 
     # Check if the last section is too small and merge it back
     if len(merged) > 1 and len(merged[-1]["text"]) < min_chunk_size:
-        last = merged.pop()
-        prev = merged[-1]
-        header_parts = []
-        if prev["header"]:
-            header_parts.append(prev["header"])
-        if last["header"]:
-            header_parts.append(last["header"])
-        merged[-1] = {
-            "header": " + ".join(header_parts) if header_parts else None,
-            "text": prev["text"] + "\n\n" + last["text"],
-        }
+        prev, last = merged[-2], merged[-1]
+        merged_len = len(prev["text"]) + 2 + len(last["text"])
+        if merged_len <= max_chunk_size:
+            merged.pop()
+            header_parts = []
+            if prev["header"]:
+                header_parts.append(prev["header"])
+            if last["header"]:
+                header_parts.append(last["header"])
+            merged[-1] = {
+                "header": " + ".join(header_parts) if header_parts else None,
+                "text": prev["text"] + "\n\n" + last["text"],
+            }
+        # else: leave the undersized last section standalone rather than
+        # exceed max_chunk_size by merging it in.
 
     return merged
 
 
 def split_large_section(section: dict, max_chunk_size: int) -> list[dict]:
     """
-    Split a section that exceeds max_chunk_size into smaller chunks
-    by breaking on stanza (blank line) boundaries.
+    Split a section that exceeds max_chunk_size into smaller chunks.
+
+    Tries blank-line (stanza) boundaries first, to keep chunks as
+    semantically coherent as possible. If a section has no blank-line
+    breaks at all, falls back to splitting on individual line boundaries
+    instead of returning the whole oversized section untouched -- this
+    previously affected ~15,600 sections in this corpus (the large
+    majority of chunks that ended up exceeding max_chunk_size in
+    practice), almost all of them rap verses transcribed as one
+    continuous block with no blank line between bars.
+
+    Only a section with no newlines at all -- nothing left to split on
+    without breaking mid-line -- is returned as a single, still-oversized
+    chunk. True last resort; confirmed rare (~30 sections in this corpus).
     """
     if len(section["text"]) <= max_chunk_size:
         return [section]
 
     stanzas = split_by_stanzas(section["text"])
+    # Stanza-level splitting only helps if every resulting stanza actually
+    # fits -- a section can have multiple stanzas where just one of them
+    # (a dense verse with no internal blank line) is still oversized on
+    # its own; packing can't shrink an already-oversized single piece, so
+    # falling back to the whole section's line-level split is what
+    # actually guarantees the cap, not just declaring "multiple stanzas
+    # found" and stopping there.
+    if len(stanzas) > 1 and all(len(s) <= max_chunk_size for s in stanzas):
+        pieces, sep = stanzas, "\n\n"
+    else:
+        pieces, sep = split_by_lines(section["text"]), "\n"
 
-    # If there's only one stanza and it's still too large, we keep it as-is
-    # rather than splitting mid-line (preserving semantic coherence).
-    if len(stanzas) <= 1:
+    if len(pieces) <= 1:
         return [section]
 
+    packed = _pack_pieces(pieces, sep, max_chunk_size)
+
     chunks = []
-    current_text = stanzas[0]
-    chunk_num = 1
-
-    for stanza in stanzas[1:]:
-        candidate = current_text + "\n\n" + stanza
-        if len(candidate) > max_chunk_size and current_text:
-            header = section["header"]
-            if header and chunk_num > 1:
-                header = f"{section['header']} (cont.)"
-            chunks.append({"header": header, "text": current_text.strip()})
-            current_text = stanza
-            chunk_num += 1
-        else:
-            current_text = candidate
-
-    # Last chunk
-    if current_text.strip():
+    for i, text in enumerate(packed):
         header = section["header"]
-        if header and chunk_num > 1:
+        if header and i > 0:
             header = f"{section['header']} (cont.)"
-        chunks.append({"header": header, "text": current_text.strip()})
+        chunks.append({"header": header, "text": text.strip()})
 
     return chunks
 
@@ -193,8 +241,9 @@ def chunk_song(
         expanded.extend(split_large_section(section, max_chunk_size))
     sections = expanded
 
-    # Step 4: Merge undersized sections
-    sections = merge_small_sections(sections, min_chunk_size)
+    # Step 4: Merge undersized sections (never past max_chunk_size -- see
+    # merge_small_sections' docstring)
+    sections = merge_small_sections(sections, min_chunk_size, max_chunk_size)
 
     # Step 5: Build final chunk texts (with header prepended if present)
     chunk_texts = []
