@@ -301,7 +301,30 @@ Answers the fundamental question: **does retrieval actually help?** Compares fiv
 
 **Outputs:** Overall Hit Rate comparison bar chart + per-query-type grouped bar chart (5 bars per type) + thesis-ready table with RAG lift deltas over both pure-LLM baselines.
 
-**Why this matters for the thesis:** Without this comparison, the evaluation only shows which retrieval technique is best — not whether retrieval is worth doing at all. The RAG lift metric directly quantifies the value added by the pipeline.
+**Why this matters for the thesis:** Without this comparison, the evaluation only shows which retrieval technique is best — not whether retrieval is worth doing at all. The RAG lift metric directly quantifies the value added by the pipeline. This experiment was added specifically to pre-empt an obvious objection to the whole project: Billboard Hot 100 lyrics are public data an LLM may have seen during pretraining, so before trusting any retrieval result it's worth asking whether retrieval is doing anything the LLM couldn't already do from memory. Rather than assume an answer, this experiment measures it directly.
+
+**Results** (full 75-query run, `all-MiniLM-L6-v2` + Hybrid + Re-ranker as the RAG configuration):
+
+| Condition | Hit Rate |
+|---|---|
+| Claude Haiku (no retrieval) | 0.133 |
+| GPT-4o-mini (no retrieval) | 0.147 |
+| RAG retrieval only | 0.840 |
+| RAG + Claude Haiku | **0.853** |
+| RAG + GPT-4o-mini | 0.800 |
+
+RAG+Claude lift over Claude alone: **+0.720**. RAG+GPT lift over GPT alone: **+0.653**.
+
+Per-query-type breakdown:
+
+| Type | Claude (no ctx) | GPT (no ctx) | RAG only | RAG+Claude | RAG+GPT |
+|---|---|---|---|---|---|
+| direct (exact lyric fragment) | 0.316 | 0.316 | 0.895 | 0.895 | 0.895 |
+| semantic | 0.105 | 0.158 | 0.789 | 0.842 | 0.737 |
+| partial | 0.053 | 0.105 | 0.947 | 1.000 | 0.947 |
+| ambiguous | 0.056 | 0.000 | 0.722 | 0.667 | 0.611 |
+
+**Interpretation — the memorization concern, tested directly:** if this corpus were meaningfully present in the LLMs' training data, the no-retrieval baselines would score far higher than this, especially on "direct" queries (literal lyric fragments — the type most vulnerable to memorization). Instead, pure Claude/GPT-4o-mini identify the correct song only ~13-15% of the time overall, and only 31.6% even on direct fragments; GPT-4o-mini scores exactly 0.000 on "ambiguous" queries without retrieval. A 70-plus point gap between the no-retrieval and RAG conditions is too large to be explained by output-format mismatches in the no-retrieval scoring (`_is_hit_raw` requires an exact `Title by Artist` match, so some of the 13-15% floor may undercount near-misses — but not by 70 points). This was a deliberate, pre-registered check, not an afterthought: the concern that a public-lyrics corpus might be "too easy" for an LLM to already know was anticipated before this experiment was designed, and the experiment was built specifically to test it empirically rather than argue about it. That the result is a strong, clean rejection of the concern is itself worth stating plainly in the thesis's Results/Discussion chapter, framed exactly that way — an anticipated risk that was tested, not assumed away.
 
 ### Experiment 11: Statistical Significance Testing (Section 7.8)
 
@@ -346,3 +369,7 @@ Measures whether `pipeline/query.py`'s retrieval-gated abstention (added in the 
 Unlike every other experiment in this notebook, this one calls `pipeline.query()` in full (not `skip_llm=True`) for each unanswerable entry, since the abstention decision is made inside `query()`/`query_stream()` itself — a retrieval-only run has nothing to observe it with. Reports `abstention_rate = fraction of unanswerable queries where LLMResponse.abstained is True`, plus a per-query breakdown flagging every case that did **not** abstain (a false negative for the gate — the pipeline confidently or not answered a query with no correct answer in this corpus).
 
 **Why it matters for the thesis:** this is the first experiment in this notebook that can say anything about hallucination behavior at all. Every other experiment's queries have a real answer; `abstention_rate` is the one number that reflects whether the system knows what it doesn't know. It is also the concrete measurement needed to actually tune `abstain_score_threshold` (currently a documented placeholder, `0.3`) — sweeping the threshold against this experiment's output is the follow-up this notebook makes possible but does not itself perform.
+
+**Results:** 14 of 15 unanswerable queries correctly triggered abstention — **abstention rate 0.933**. The mix covers fabricated song/artist names, real well-known songs confirmed absent from this Billboard-derived corpus (e.g. "Bohemian Rhapsody," "Stairway to Heaven," "Hotel California"), and out-of-scope non-song queries ("what's the weather like today"), and the gate correctly abstained across all three categories.
+
+The single false negative — **"purple rain by prince"** — did not abstain; the pipeline answered rather than admitting no correct match exists in the corpus. This is a concrete, reproducible example of the untuned `abstain_score_threshold=0.3` placeholder failing in exactly the way the honest-limits note above anticipated: without a real threshold sweep, some false negatives are expected. Worth citing directly when discussing the threshold-tuning follow-up as future work, rather than leaving it purely hypothetical.
