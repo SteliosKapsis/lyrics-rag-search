@@ -199,13 +199,35 @@ def main():
         st.session_state.session_id = str(uuid.uuid4())
 
     # --- Query input ---
-    query = st.text_input(
-        "What song are you looking for?",
-        placeholder="e.g., that sad song about leaving home in the rain",
+    # A plain st.text_input reruns the whole script (i.e. fires a query) not just
+    # on Enter but also on blur — losing window focus for any reason (clicking a
+    # sidebar widget, a screenshot/snip overlay stealing focus, alt-tabbing) commits
+    # whatever text is currently typed and submits it. Wrapping it in a form makes
+    # submission require an explicit action (the button, or Enter while the box
+    # itself is focused) instead of firing on any incidental rerun.
+    st.markdown(
+        """
+        <style>
+        /* Streamlit renders its "Press Enter to submit" hint as an overlay inside
+           the input box, so it visually collides with the query text once typing
+           reaches the right edge. The explicit Search button below makes the hint
+           redundant, so hide it outright rather than fight its positioning. */
+        div[data-testid="InputInstructions"] {
+            display: none;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
+    with st.form(key="query_form"):
+        query = st.text_input(
+            "What song are you looking for?",
+            placeholder="e.g., that sad song about leaving home in the rain",
+        )
+        submitted = st.form_submit_button("Search")
 
-    if not query:
-        st.info("Enter a query above to search for songs.")
+    if not submitted or not query:
+        st.info("Enter a query above and press Search (or Enter) to search for songs.")
         return
 
     # --- Run query (RabbitMQ worker path or direct streaming path) ---
