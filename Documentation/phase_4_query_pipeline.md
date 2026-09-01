@@ -8,6 +8,7 @@ The core query pipeline that ties together retrieval and generation. Supports st
 
 - `pipeline/query.py` — main query pipeline (QueryPipeline class + CLI)
 - `pipeline/reranker.py` — cross-encoder reranker module
+- `pipeline/llm_backend.py` — Anthropic/Ollama API calling, composed into `QueryPipeline` (see "LLM backend calling" below)
 
 ## Usage
 
@@ -236,6 +237,24 @@ Every field carries a `Field(description=...)` — since `RESPONSE_TOOL`'s schem
 3. The caller collects all tokens and parses the final JSON after stream completes
 
 Streaming uses `client.messages.stream()` for Anthropic and `stream: true` for Ollama.
+
+#### LLM backend calling (`pipeline/llm_backend.py`)
+
+All direct Anthropic/Ollama API calls — plain-text (used for HyDE), structured (tool-use / JSON-schema-constrained), and streaming — live in a separate `LLMBackend` class, not on `QueryPipeline` itself. `QueryPipeline.__init__` composes one as `self._backend`, the same way it already composes a `Reranker`:
+
+```python
+self._backend = LLMBackend(
+    llm_backend=self.llm_backend,
+    llm_model=self.llm_model,
+    anthropic_client=self.anthropic_client,
+)
+```
+
+`synthesize()` and `query_stream()` call `self._backend.call_anthropic_structured(...)` / `self._backend.stream_anthropic(...)` (or the Ollama equivalents) instead of calling the API directly. This is a structural extraction, not a rewrite — same prompts, same API calls, same parsing, same error handling; `QueryPipeline`'s public methods and their observable behavior are unchanged (verified by running the same queries against the pre-extraction code and comparing results directly, including the exact abstain reason and threshold value on a deliberately weak-config query).
+
+**Why:** `QueryPipeline` was accumulating retrieval (dense/BM25/hybrid), HyDE generation, reranker orchestration, grouping, *and* raw backend-calling logic for two different providers in both streaming and non-streaming form — five distinct concerns in one class. Separating "how do we talk to a backend" from "how do we retrieve and assemble context" mirrors the existing `Reranker` separation and keeps `QueryPipeline` focused on orchestration.
+
+**One method stayed put deliberately:** `_generate_hyde_hypothesis()` remains on `QueryPipeline` with its exact original name and signature — it's a thin passthrough that now calls `self._backend.call_anthropic(...)` / `self._backend.call_ollama(...)` internally, but the notebook (`notebooks/evaluation.ipynb` cell 8) calls `pipeline._generate_hyde_hypothesis(query)` directly from outside the class, so moving or renaming it would have broken that call site. `_build_user_message()` also stayed on `QueryPipeline` — it only formats a prompt string, it never calls a backend, so it isn't really "backend calling" logic.
 
 ## LLM Backends
 
