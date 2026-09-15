@@ -41,7 +41,11 @@ If these files are missing, the app shows an error with instructions to run the 
 
 ### Query Input
 
-Text input field at the top of the page. Empty queries show an info message prompting the user.
+Text input wrapped in an `st.form` with an explicit "Search" button, rather than a bare `st.text_input`. A plain `st.text_input` reruns the whole script — i.e. submits the query — not just on Enter but also on blur (losing window focus for any reason: clicking a sidebar widget, a screenshot/snip overlay grabbing focus, alt-tabbing). The form requires a deliberate action (the button, or Enter while the box itself is focused) instead. Streamlit's built-in "Press Enter to submit" hint is hidden via injected CSS (`div[data-testid="InputInstructions"]`), since it rendered as an overlay inside the input box that visually collided with long query text, and the explicit button makes it redundant anyway.
+
+**Behavior note:** because submission is now explicit, changing a sidebar setting after a search does not silently re-run the last query with the new setting — the results view drops back to the "Enter a query above" prompt until Search is pressed again.
+
+Empty (unsubmitted) queries show an info message prompting the user.
 
 ### Sidebar Controls
 
