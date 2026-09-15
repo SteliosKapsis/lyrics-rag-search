@@ -9,6 +9,7 @@ The core query pipeline that ties together retrieval and generation. Supports st
 - `pipeline/query.py` — main query pipeline (QueryPipeline class + CLI)
 - `pipeline/reranker.py` — cross-encoder reranker module
 - `pipeline/llm_backend.py` — Anthropic/Ollama API calling, composed into `QueryPipeline` (see "LLM backend calling" below)
+- `pipeline/retriever.py` — query embedding, FAISS/BM25/RRF search, composed into `QueryPipeline` (see "Retrieval mechanics" below)
 
 ## Usage
 
@@ -255,6 +256,27 @@ self._backend = LLMBackend(
 **Why:** `QueryPipeline` was accumulating retrieval (dense/BM25/hybrid), HyDE generation, reranker orchestration, grouping, *and* raw backend-calling logic for two different providers in both streaming and non-streaming form — five distinct concerns in one class. Separating "how do we talk to a backend" from "how do we retrieve and assemble context" mirrors the existing `Reranker` separation and keeps `QueryPipeline` focused on orchestration.
 
 **One method stayed put deliberately:** `_generate_hyde_hypothesis()` remains on `QueryPipeline` with its exact original name and signature — it's a thin passthrough that now calls `self._backend.call_anthropic(...)` / `self._backend.call_ollama(...)` internally, but the notebook (`notebooks/evaluation.ipynb` cell 8) calls `pipeline._generate_hyde_hypothesis(query)` directly from outside the class, so moving or renaming it would have broken that call site. `_build_user_message()` also stayed on `QueryPipeline` — it only formats a prompt string, it never calls a backend, so it isn't really "backend calling" logic.
+
+#### Retrieval mechanics (`pipeline/retriever.py`)
+
+Query embedding, FAISS dense search, BM25 sparse search, RRF fusion, and lazy cross-encoder-reranker loading live in a separate `Retriever` class, not on `QueryPipeline` itself — the same composition pattern as `LLMBackend`. Unlike `LLMBackend`, `Retriever` doesn't own loading: `QueryPipeline.__init__` still reads the FAISS index, metadata, BM25 index, and embedding model/client itself (so the model-identity sidecar check in `_assert_index_model_matches()` keeps running before anything is handed off), then passes the already-loaded objects in:
+
+```python
+self._retriever = Retriever(
+    index=index,
+    metadata=metadata,
+    bm25=bm25,
+    embed_model=embed_model,
+    openai_embed_client=openai_embed_client,
+    reranker_model=reranker_model,
+)
+```
+
+`_retrieve_step()` (and everything upstream of it — `query()`, `query_stream()`) is unaffected: it still calls `self.retrieve_hybrid(...)`, `self.retrieve(...)`, `self._get_reranker()` exactly as before. This is a structural extraction, not a rewrite — verified by running the same queries against the pre-extraction code and comparing `retrieve()`/`retrieve_bm25()`/`retrieve_hybrid()`/`_embed_text()` output directly (byte-for-byte identical), plus a full `query()`/`query_stream()` smoke test.
+
+**Why:** per the graph traced in this session's `/graphify` exploration, `QueryPipeline` still owned five raw retrieval methods directly even after the `LLMBackend` extraction — the one concentrated responsibility that hadn't been split out the same way LLM-calling and reranking already had.
+
+**Wider surface area than `LLMBackend`, handled with properties, not just methods:** `notebooks/evaluation.ipynb`'s latency-profiling cell (Section 7.7) reaches directly into pipeline internals — `pipeline._embed_text(q)`, `pipeline.index.search(...)`, `pipeline.metadata[idx]`, `pipeline.bm25 is not None`, `pipeline.retrieve_bm25(...)`, `pipeline.retrieve_hybrid(...)`, `pipeline._get_reranker()` — not just through `query()`. So on top of thin delegating methods (`_embed_text`, `retrieve`, `retrieve_bm25`, `retrieve_hybrid`, `_get_reranker`, matching the `_generate_hyde_hypothesis` pattern), `QueryPipeline` also exposes `index`, `metadata`, and `bm25` as **read-only properties** forwarding to `self._retriever.index`/`.metadata`/`.bm25`, since those are read as plain attributes, not methods, by that notebook cell. Nothing anywhere reassigns them from outside `__init__`, so read-only is safe. `_assert_index_model_matches()` was updated to take the just-loaded FAISS index as an explicit parameter (rather than reading `self.index`), since it runs before `self._retriever` exists.
 
 ## LLM Backends
 

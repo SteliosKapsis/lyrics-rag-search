@@ -48,6 +48,7 @@ from pydantic import BaseModel, Field, model_validator
 from sentence_transformers import SentenceTransformer
 
 from pipeline.llm_backend import LLMBackend
+from pipeline.retriever import Retriever
 
 # Load .env from project root
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
@@ -295,30 +296,31 @@ class QueryPipeline:
 
         # Load FAISS index
         log.info("Loading FAISS index from %s", self.index_path)
-        self.index = faiss.read_index(self.index_path)
+        index = faiss.read_index(self.index_path)
 
         # Assert the index was actually built with this embedding model. Query
         # and index embeddings from different models occupy incomparable vector
         # spaces — mismatched retrieval degrades silently (no exception, just
         # worse results), so this must fail loudly rather than proceed on a
         # guess. See pipeline/embedding.py::save_index_info() for the sidecar.
-        self._assert_index_model_matches(self.index_path, self.embedding_model_name)
+        self._assert_index_model_matches(self.index_path, self.embedding_model_name, index)
 
         # Load metadata
         with open(self.metadata_path, encoding="utf-8") as f:
-            self.metadata = json.load(f)
+            metadata = json.load(f)
 
         # Load BM25 index (optional — hybrid retrieval degrades gracefully)
-        self.bm25 = None
+        bm25 = None
         if Path(self.bm25_path).exists():
             log.info("Loading BM25 index from %s", self.bm25_path)
             with open(self.bm25_path, "rb") as f:
-                self.bm25 = pickle.load(f)
+                bm25 = pickle.load(f)
         else:
             log.warning("BM25 index not found at %s — hybrid retrieval disabled", self.bm25_path)
 
         # Load embedding model (local or OpenAI)
-        self._openai_embed_client = None
+        openai_embed_client = None
+        embed_model = None
         if self.embedding_model_name == "text-embedding-3-small":
             log.info("Using OpenAI embedding model: %s", self.embedding_model_name)
             import openai
@@ -326,11 +328,10 @@ class QueryPipeline:
             if not api_key:
                 log.warning("OPENAI_API_KEY not set — query embedding will fail")
             else:
-                self._openai_embed_client = openai.OpenAI(api_key=api_key)
-            self.embed_model = None
+                openai_embed_client = openai.OpenAI(api_key=api_key)
         else:
             log.info("Loading embedding model: %s", self.embedding_model_name)
-            self.embed_model = SentenceTransformer(self.embedding_model_name)
+            embed_model = SentenceTransformer(self.embedding_model_name)
 
         # Init Anthropic client (only if using anthropic backend)
         self.anthropic_client = None
@@ -350,9 +351,19 @@ class QueryPipeline:
             anthropic_client=self.anthropic_client,
         )
 
-        # Reranker loaded lazily on first use
-        self._reranker = None
-        self.reranker_model = reranker_model
+        # Owns query embedding, FAISS/BM25 search, RRF fusion, and lazy
+        # cross-encoder reranker loading — separated from orchestration/
+        # synthesis logic for the same reason. See pipeline/retriever.py.
+        # .index/.metadata/.bm25 stay readable as pipeline.index/etc. via
+        # the properties below — some notebook cells read them directly.
+        self._retriever = Retriever(
+            index=index,
+            metadata=metadata,
+            bm25=bm25,
+            embed_model=embed_model,
+            openai_embed_client=openai_embed_client,
+            reranker_model=reranker_model,
+        )
 
         # Score threshold below which query()/query_stream() skip the LLM call
         # and abstain instead of guessing. PLACEHOLDER VALUE — 0.3 is not tuned
@@ -366,7 +377,19 @@ class QueryPipeline:
         else:
             self.abstain_score_threshold = float(os.environ.get("RAG_ABSTAIN_SCORE_THRESHOLD", 0.3))
 
-    def _assert_index_model_matches(self, index_path: str, embedding_model: str) -> None:
+    @property
+    def index(self):
+        return self._retriever.index
+
+    @property
+    def metadata(self):
+        return self._retriever.metadata
+
+    @property
+    def bm25(self):
+        return self._retriever.bm25
+
+    def _assert_index_model_matches(self, index_path: str, embedding_model: str, index) -> None:
         """
         Read the model-identity sidecar written by pipeline/embedding.py's
         save_index_info() and fail loudly if it's missing or doesn't match the
@@ -376,6 +399,9 @@ class QueryPipeline:
         incomparable vector spaces — this is the single highest-severity
         failure mode in the pipeline, because a mismatch does not throw on
         its own; it just quietly returns worse results.
+
+        Takes the just-loaded FAISS index directly (rather than reading
+        self.index) since this runs before self._retriever exists.
         """
         info_path = Path(index_path).with_name(Path(index_path).stem + "_info.json")
         if not info_path.exists():
@@ -402,34 +428,21 @@ class QueryPipeline:
             )
 
         recorded_dim = info.get("embedding_dim")
-        if recorded_dim is not None and recorded_dim != self.index.d:
+        if recorded_dim is not None and recorded_dim != index.d:
             raise ValueError(
                 f"Embedding dimension mismatch for index '{index_path}': the sidecar "
                 f"records {recorded_dim} dimensions but the loaded FAISS index has "
-                f"{self.index.d}. The sidecar may be stale or hand-edited — "
+                f"{index.d}. The sidecar may be stale or hand-edited — "
                 f"re-run pipeline/embedding.py to regenerate the index and sidecar together."
             )
 
     def _get_reranker(self):
         """Lazy-load the cross-encoder reranker on first use."""
-        if self._reranker is None:
-            from pipeline.reranker import Reranker
-            self._reranker = Reranker(model_name=self.reranker_model)
-        return self._reranker
+        return self._retriever._get_reranker()
 
     def _embed_text(self, text: str) -> np.ndarray:
         """Embed a single text string, normalized for cosine similarity."""
-        if self._openai_embed_client:
-            response = self._openai_embed_client.embeddings.create(
-                model="text-embedding-3-small", input=[text],
-            )
-            emb = np.array([response.data[0].embedding], dtype=np.float32)
-            norms = np.linalg.norm(emb, axis=1, keepdims=True)
-            norms[norms == 0] = 1
-            return emb / norms
-        return self.embed_model.encode(
-            [text], normalize_embeddings=True
-        ).astype(np.float32)
+        return self._retriever._embed_text(text)
 
     def _generate_hyde_hypothesis(self, query: str) -> str:
         """
@@ -460,126 +473,19 @@ class QueryPipeline:
             log.warning("HyDE hypothesis generation failed: %s. Falling back to raw query.", e)
             return query
 
-    @observe(name="dense-retrieval")
     def retrieve(self, query: str, top_k: int = 5) -> list[dict]:
-        """
-        Embed query and retrieve top-k similar chunks from FAISS.
+        """Embed query and retrieve top-k similar chunks from FAISS."""
+        return self._retriever.retrieve(query, top_k=top_k)
 
-        Returns a list of dicts with a "score" field (FAISS cosine similarity).
-        """
-        q_emb = self._embed_text(query)
-        scores, indices = self.index.search(q_emb, top_k)
-
-        results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx < 0:
-                continue
-            entry = dict(self.metadata[idx])
-            entry["score"] = float(score)
-            results.append(entry)
-
-        # Candidate list only (title/artist/chunk_index/score) — not full chunk
-        # text, to keep trace payloads lean; already bounded by top_k.
-        get_client().update_current_span(
-            input={"query": query, "top_k": top_k},
-            output=[{"title": r["title"], "artist": r["artist"], "chunk_index": r["chunk_index"],
-                     "score": r["score"]} for r in results],
-        )
-        return results
-
-    @observe(name="sparse-retrieval")
     def retrieve_bm25(self, query: str, top_k: int = 5) -> list[dict]:
-        """
-        Retrieve top-k chunks using BM25 keyword search.
+        """Retrieve top-k chunks using BM25 keyword search."""
+        return self._retriever.retrieve_bm25(query, top_k=top_k)
 
-        Returns a list of dicts with a "bm25_score" field.
-        """
-        if self.bm25 is None:
-            return []
-
-        tokenized_query = query.lower().split()
-        scores = self.bm25.get_scores(tokenized_query)
-        top_indices = np.argsort(scores)[::-1][:top_k]
-
-        results = []
-        for idx in top_indices:
-            idx = int(idx)
-            if scores[idx] <= 0:
-                break
-            entry = dict(self.metadata[idx])
-            entry["bm25_score"] = float(scores[idx])
-            results.append(entry)
-
-        get_client().update_current_span(
-            input={"query": query, "top_k": top_k},
-            output=[{"title": r["title"], "artist": r["artist"], "chunk_index": r["chunk_index"],
-                     "bm25_score": r["bm25_score"]} for r in results],
-        )
-        return results
-
-    @observe(name="hybrid-fusion")
     def retrieve_hybrid(
         self, query: str, top_k: int = 5, rrf_k: int = 60,
     ) -> list[dict]:
-        """
-        Hybrid retrieval: FAISS dense + BM25 sparse, merged with
-        Reciprocal Rank Fusion (RRF).
-
-        RRF formula: score(d) = Σ 1 / (k + rank_i(d))
-        where k=60 is the standard constant.
-
-        Why hybrid helps:
-        - Dense (FAISS) captures semantic meaning — good for descriptive
-          queries like "sad song about rain"
-        - Sparse (BM25) captures exact keyword matches — good for direct
-          lyric recall like "never gonna give you up"
-        - Combining them covers both query types without needing to know
-          which type the user is issuing.
-        """
-        fetch_k = top_k * 3
-
-        # Get ranked lists from both methods
-        dense_results = self.retrieve(query, top_k=fetch_k)
-        sparse_results = self.retrieve_bm25(query, top_k=fetch_k)
-
-        # Build RRF scores keyed by metadata index
-        # We need a unique identifier — use (title, artist, chunk_index)
-        def chunk_key(r):
-            return (r["title"], r["artist"], r["chunk_index"])
-
-        rrf_scores = defaultdict(float)
-        chunk_data = {}
-
-        for rank, r in enumerate(dense_results, 1):
-            key = chunk_key(r)
-            rrf_scores[key] += 1.0 / (rrf_k + rank)
-            if key not in chunk_data:
-                chunk_data[key] = dict(r)
-            chunk_data[key]["score"] = r["score"]  # FAISS score
-
-        for rank, r in enumerate(sparse_results, 1):
-            key = chunk_key(r)
-            rrf_scores[key] += 1.0 / (rrf_k + rank)
-            if key not in chunk_data:
-                chunk_data[key] = dict(r)
-                chunk_data[key]["score"] = 0.0  # no FAISS score
-            chunk_data[key]["bm25_score"] = r["bm25_score"]
-
-        # Sort by RRF score and return top_k
-        ranked_keys = sorted(rrf_scores.keys(), key=lambda k: rrf_scores[k], reverse=True)[:top_k]
-
-        results = []
-        for key in ranked_keys:
-            entry = chunk_data[key]
-            entry["rrf_score"] = rrf_scores[key]
-            results.append(entry)
-
-        get_client().update_current_span(
-            input={"query": query, "top_k": top_k, "rrf_k": rrf_k},
-            output=[{"title": r["title"], "artist": r["artist"], "chunk_index": r["chunk_index"],
-                     "rrf_score": r["rrf_score"]} for r in results],
-        )
-        return results
+        """Hybrid retrieval: FAISS dense + BM25 sparse, merged with RRF."""
+        return self._retriever.retrieve_hybrid(query, top_k=top_k, rrf_k=rrf_k)
 
     def group_by_song(self, results: list[dict]) -> list[dict]:
         """
