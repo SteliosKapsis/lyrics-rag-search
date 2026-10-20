@@ -20,7 +20,6 @@ import re
 from pathlib import Path
 
 from langdetect import detect, LangDetectException
-from rapidfuzz import fuzz
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,10 +130,7 @@ def detect_language(lyrics: str) -> str | None:
 
 def validate_entry(
     entry: dict,
-    original_title: str | None = None,
-    original_artist: str | None = None,
     min_lyrics_length: int = 100,
-    match_threshold: float = 60.0,
 ) -> list[str]:
     """
     Validate a single lyrics entry. Returns a list of flag reasons (empty = valid).
@@ -142,7 +138,6 @@ def validate_entry(
     Checks:
         - Lyrics too short or empty
         - Non-English lyrics
-        - Artist/title mismatch vs. the original input (if provided)
     """
     flags = []
 
@@ -157,28 +152,6 @@ def validate_entry(
         lang = detect_language(entry["lyrics"])
         if lang and lang != "en":
             flags.append(f"non_english (detected={lang})")
-
-    # Check artist match
-    if original_artist and entry.get("artist"):
-        artist_score = fuzz.token_sort_ratio(
-            original_artist.lower(), entry["artist"].lower()
-        )
-        if artist_score < match_threshold:
-            flags.append(
-                f"artist_mismatch (input='{original_artist}', "
-                f"genius='{entry['artist']}', score={artist_score:.0f})"
-            )
-
-    # Check title match
-    if original_title and entry.get("title"):
-        title_score = fuzz.token_sort_ratio(
-            original_title.lower(), entry["title"].lower()
-        )
-        if title_score < match_threshold:
-            flags.append(
-                f"title_mismatch (input='{original_title}', "
-                f"genius='{entry['title']}', score={title_score:.0f})"
-            )
 
     return flags
 
@@ -209,9 +182,6 @@ def main():
         original_lyrics = entry.get("lyrics", "")
         entry["lyrics"] = clean_lyrics(original_lyrics, entry.get("title", ""))
 
-        # Validate (we compare Genius-returned title/artist against themselves
-        # since we don't carry the original CSV input through. The main value
-        # here is catching empty/short lyrics and obviously wrong matches.)
         flags = validate_entry(entry)
 
         if flags:

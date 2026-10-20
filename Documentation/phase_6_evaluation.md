@@ -67,6 +67,8 @@ Neither versioned set has an enforcement mechanism preventing someone from editi
 
 ## Experiments
 
+**Provenance note (2026-09-15):** Experiments 1-4 and 13 were originally documented on 2026-08-25, one day *before* the corpus fix (dedup + non-song filtering + chunking bug fix, 2026-08-26) that changed the corpus from 175,792 to 130,336 chunks. A full re-run against the corrected corpus was checkpointed on 2026-08-28-29 but never transcribed back into this file, so the tables below were silently stale relative to the corpus actually being evaluated. Reconciled here directly from `notebooks/checkpoints/{all_results,topk_results,rrf_results,fetch_results}.pkl`, which reflect the corrected corpus and the same 75-query answerable golden set used throughout. Two conclusions changed materially, not just numerically: Hybrid + Re-ranker now beats Baseline + Re-ranker at every tested fetch multiplier and rrf_k (previously only at a large 8x pool), and the "lower rrf_k helps" trend from the pre-fix run does not survive on the corrected corpus (Hybrid + Re-ranker is now nearly flat across rrf_k). No notebook re-run was needed for this reconciliation — the checkpoint helper (`load_ckpt`) skips recomputation when a checkpoint file already exists, so these are the values the notebook itself would report if run again with the checkpoints in place.
+
 ### Experiment 1: Full Technique Combination Grid (Section 3.1)
 
 Tests all 2^3 = 8 combinations of {Hybrid, HyDE, Re-ranker} across available embedding models:
@@ -92,7 +94,7 @@ The full combinatorial grid ensures no technique interaction is missed. Earlier 
 
 Each embedding model requires its own FAISS index. The notebook auto-detects which indices are available and runs the grid on those.
 
-**Key result:** Hybrid + Re-ranker (0.698 MRR with MiniLM) is the best configuration at default k=5, edging out Baseline + Re-ranker (0.674 MRR) and surpassing all other combinations including those with HyDE.
+**Key result:** Hybrid + Re-ranker is the best configuration at default k=5 for every embedding model tested, surpassing all other combinations including those with HyDE. With `all-MiniLM-L6-v2`: 0.798 MRR, ahead of + Re-ranker alone (0.700 MRR). `bge-small-en-v1.5` reaches the highest MRR of the three models at this configuration, 0.840, ahead of `text-embedding-3-small` (0.821) and MiniLM (0.798).
 
 ### Experiment 2: Top-k Sensitivity (Section 3.2)
 
@@ -100,12 +102,12 @@ Sweeps top_k = {3, 5, 10, 20} for Baseline and Baseline + Re-ranker to measure h
 
 | top_k | Baseline MRR | Baseline HR | + Re-ranker MRR | + Re-ranker HR |
 |-------|-------------|-------------|-----------------|----------------|
-| 3     | 0.556       | 0.587       | 0.593           | 0.600          |
-| 5     | 0.571       | 0.627       | 0.674           | 0.707          |
-| 10    | 0.586       | 0.693       | 0.729           | 0.773          |
-| **20**| **0.596**   | **0.773**   | **0.762**       | **0.813**      |
+| 3     | 0.584       | 0.640       | 0.673           | 0.693          |
+| 5     | 0.603       | 0.693       | 0.700           | 0.733          |
+| 10    | 0.612       | 0.733       | 0.771           | 0.813          |
+| **20**| **0.620**   | **0.827**   | **0.811**       | **0.867**      |
 
-The re-ranker's benefit scales with k: at k=20, it achieves **0.762 MRR and 81.3% Hit Rate** — the highest result in this experiment (Experiment 8's combined parameter sweep achieves higher results still — see Section 7.5). The re-ranker advantage grows from +0.037 MRR at k=3 to +0.166 at k=20, demonstrating that giving the cross-encoder more candidates consistently improves performance.
+The re-ranker's benefit scales with k: at k=20, it achieves **0.811 MRR and 86.7% Hit Rate** — the highest result in this experiment (Experiment 8's combined parameter sweep achieves higher results still — see Section 7.5). The re-ranker advantage grows from +0.089 MRR at k=3 to +0.191 at k=20, demonstrating that giving the cross-encoder more candidates consistently improves performance.
 
 ### Experiment 3: RRF Parameter Tuning (Section 3.3)
 
@@ -113,13 +115,13 @@ Sweeps rrf_k = {20, 40, 60, 80, 100} for Hybrid and Hybrid + Re-ranker configura
 
 | rrf_k | Hybrid MRR | Hybrid + RR MRR |
 |-------|-----------|-----------------|
-| **20**| 0.451     | **0.633**       |
-| 40    | 0.451     | 0.593           |
-| 60    | 0.451     | 0.553           |
-| 80    | 0.451     | 0.553           |
-| 100   | 0.451     | 0.553           |
+| 20    | 0.727     | 0.793           |
+| 40    | 0.727     | **0.798**       |
+| **60 (default)** | 0.727 | **0.798** |
+| 80    | 0.727     | **0.798**       |
+| 100   | 0.727     | **0.798**       |
 
-Hybrid retrieval without re-ranking is completely insensitive to rrf_k (identical 0.451 across all values). Lower rrf_k improves Hybrid + Re-ranker by weighting FAISS results more heavily, but even the best (0.633 at rrf_k=20) cannot surpass pure Baseline + Re-ranker (0.653).
+Hybrid retrieval without re-ranking is completely insensitive to rrf_k (identical 0.727 MRR across all tested values). Hybrid + Re-ranker is also nearly insensitive to rrf_k on the corrected corpus: 0.793 at rrf_k=20, then flat at 0.798 from rrf_k=40 upward, including the default of 60. This is a materially different picture from the earlier, pre-corpus-fix run of this experiment, which showed a clear "lower rrf_k helps" trend (0.633 down to 0.553) and a Hybrid + Re-ranker ceiling below Baseline + Re-ranker's 0.653. On the corrected corpus, Hybrid + Re-ranker at the default rrf_k=60 (0.798) instead exceeds Baseline + Re-ranker (0.700, Experiment 1) at k=5 — the earlier conclusion that hybrid search could not beat the re-ranked FAISS-only baseline does not hold after the corpus fix.
 
 ### Experiment 4: Fetch-k Multiplier (Section 3.4)
 
@@ -127,12 +129,12 @@ Sweeps fetch_k_multiplier = {2, 3, 5, 8} for Baseline + Re-ranker and Hybrid + R
 
 | Multiplier | fetch_k | Baseline + RR MRR | Baseline + RR HR | Hybrid + RR MRR | Hybrid + RR HR |
 |------------|---------|-------------------|------------------|-----------------|----------------|
-| 2x         | 10      | 0.620             | 0.640            | 0.523           | 0.600          |
-| 3x (default) | 15   | 0.653             | 0.680            | 0.553           | 0.600          |
-| 5x         | 25      | 0.653             | 0.720            | 0.633           | 0.720          |
-| **8x**     | **40**  | 0.693             | 0.760            | **0.753**       | **0.840**      |
+| 2x         | 10      | 0.676             | 0.707            | 0.797           | 0.840          |
+| 3x (default) | 15   | 0.700             | 0.733            | 0.798           | 0.840          |
+| 5x         | 25      | 0.773             | 0.813            | 0.838           | 0.880          |
+| **8x**     | **40**  | **0.798**         | **0.840**        | **0.858**       | **0.907**      |
 
-With a sufficiently large candidate pool (8x), Hybrid + Re-ranker (0.753 MRR, 0.840 HR) surpasses Baseline + Re-ranker (0.693/0.760) for the first time. At high multipliers, BM25's additional candidates give the re-ranker more material to work with, overcoming the noise that harms lower-pool configurations.
+Hybrid + Re-ranker now outperforms Baseline + Re-ranker at every tested multiplier, not only at 8x as in the pre-corpus-fix run — the gap is present from 2x (0.797 vs 0.676) and widens to 8x (0.858 MRR, 0.907 HR, vs 0.798/0.840). BM25's additional candidates consistently give the re-ranker more material to work with on the corrected corpus.
 
 ### Experiment 5: Chunking Parameter Sweep
 
@@ -217,15 +219,15 @@ The final section produces:
 
 ## Key Findings
 
-1. **Cross-encoder re-ranking is the single most impactful technique.** At default k=5, Hybrid + Re-ranker (0.698 MRR) is the best configuration in the technique grid, ahead of Baseline + Re-ranker (0.674 MRR). Re-ranking alone also scales well with k — Baseline + Re-ranker reaches 0.762 MRR at k=20 in the top-k sweep. The re-ranker was only discovered to be effective in isolation after expanding the grid from 6 to 8 combinations. (Experiment 8's combined parameter sweep later finds still higher results — see Section 7.5.)
+1. **Cross-encoder re-ranking is the single most impactful technique.** At default k=5, Hybrid + Re-ranker (0.798 MRR for MiniLM, 0.840 for bge-small) is the best configuration in the technique grid, ahead of Baseline + Re-ranker (0.700 MRR for MiniLM). Re-ranking alone also scales well with k — Baseline + Re-ranker reaches 0.811 MRR at k=20 in the top-k sweep. The re-ranker was only discovered to be effective in isolation after expanding the grid from 6 to 8 combinations. (Experiment 8's combined parameter sweep later finds still higher results — see Section 7.5.)
 
-2. **The re-ranker's benefit scales with candidate pool size.** Whether increased via higher top-k (+0.182 MRR at k=20) or higher fetch multiplier (+0.040 MRR at 8x), giving the cross-encoder more candidates consistently improves performance.
+2. **The re-ranker's benefit scales with candidate pool size.** Whether increased via higher top-k (+0.191 MRR at k=20 vs k=3) or higher fetch multiplier (+0.060 MRR for Hybrid + Re-ranker at 8x vs the 3x default), giving the cross-encoder more candidates consistently improves performance.
 
-3. **Contextual embeddings make dense retrieval a strong baseline.** Prepending metadata headers achieves MRR 0.563 with no additional techniques.
+3. **Contextual embeddings make dense retrieval a strong baseline.** Prepending metadata headers achieves MRR 0.603 with no additional techniques (MiniLM).
 
-4. **HyDE consistently degrades performance (-57% to -86% MRR).** Lyrics queries already contain document-space text, making HyDE's hypotheses redundant or harmful.
+4. **HyDE consistently degrades performance (-74% to -91% MRR).** Lyrics queries already contain document-space text, making HyDE's hypotheses redundant or harmful.
 
-5. **Hybrid search harms at default settings but helps at scale.** At 8x fetch multiplier, Hybrid + Re-ranker (0.753 MRR) surpasses Baseline + Re-ranker (0.693 MRR).
+5. **Hybrid search now helps at every fetch multiplier tested, not only at scale.** On the corrected corpus, Hybrid + Re-ranker (0.798 MRR at the 3x default) already exceeds Baseline + Re-ranker (0.700 MRR) — a reversal of the earlier, pre-corpus-fix finding that hybrid search only paid off at a large (8x) candidate pool. The gap widens further at 8x (0.858 vs 0.798).
 
 6. **Query specificity is the dominant factor.** Improving test queries from generic descriptions to lyrics-grounded formulations improved baseline MRR by +51%, a larger gain than any technique combination.
 
@@ -351,16 +353,16 @@ producing `faiss_noctx.index`, `metadata_noctx.json`, and `bm25_noctx.pkl`. The 
 
 | Embedding Model | Technique | Contextual | Non-contextual | Delta |
 |-----------------|-----------|-----------|-----------------|-------|
-| all-MiniLM-L6-v2 | Baseline (FAISS only) | 0.571 | 0.471 | +0.100 |
-| all-MiniLM-L6-v2 | + Re-ranker | 0.674 | 0.598 | +0.077 |
-| all-MiniLM-L6-v2 | + Hybrid | 0.590 | 0.513 | +0.077 |
-| all-MiniLM-L6-v2 | + Hybrid + Re-ranker | 0.698 | 0.684 | +0.013 |
-| bge-small-en-v1.5 | Baseline (FAISS only) | 0.476 | 0.558 | -0.082 |
-| bge-small-en-v1.5 | + Re-ranker | 0.580 | 0.683 | -0.103 |
-| bge-small-en-v1.5 | + Hybrid | 0.549 | 0.556 | -0.007 |
-| bge-small-en-v1.5 | + Hybrid + Re-ranker | 0.709 | 0.653 | +0.056 |
+| all-MiniLM-L6-v2 | Baseline (FAISS only) | 0.603 | 0.503 | +0.100 |
+| all-MiniLM-L6-v2 | + Re-ranker | 0.700 | 0.618 | +0.082 |
+| all-MiniLM-L6-v2 | + Hybrid | 0.727 | 0.653 | +0.074 |
+| all-MiniLM-L6-v2 | + Hybrid + Re-ranker | 0.798 | 0.831 | -0.033 |
+| bge-small-en-v1.5 | Baseline (FAISS only) | 0.509 | 0.551 | -0.042 |
+| bge-small-en-v1.5 | + Re-ranker | 0.600 | 0.700 | -0.100 |
+| bge-small-en-v1.5 | + Hybrid | 0.671 | 0.728 | -0.057 |
+| bge-small-en-v1.5 | + Hybrid + Re-ranker | 0.840 | 0.880 | -0.040 |
 
-Average MRR delta (contextual − non-contextual): **+0.067** for all-MiniLM-L6-v2 — contextual embeddings help consistently, most strongly at the unassisted baseline. For bge-small-en-v1.5, the average delta is **-0.034**: contextual embeddings actually *hurt* the Baseline and + Re-ranker configurations, and only pull ahead once combined with Hybrid + Re-ranker. Unlike Anthropic's reported 35% reduction in retrieval failure, the benefit of contextual embeddings in this lyrics domain is model- and configuration-dependent rather than a uniform win.
+Average MRR delta (contextual minus non-contextual): **+0.056** for all-MiniLM-L6-v2 — contextual embeddings help at Baseline, + Re-ranker, and + Hybrid, but reverse to a small negative delta (-0.033) once Hybrid and Re-ranker are combined. For bge-small-en-v1.5, the average delta is **-0.060**: contextual embeddings hurt at every one of the four tested configurations, including + Hybrid + Re-ranker, which no longer flips positive as it did before the corpus fix. Unlike Anthropic's reported 35% reduction in retrieval failure, the benefit of contextual embeddings in this lyrics domain is model- and configuration-dependent rather than a uniform win — for bge-small-en-v1.5 specifically, non-contextual embeddings now outperform contextual ones across the board.
 
 **Data integrity:** Both indices were built from the same `chunks.jsonl` without re-running chunking or ingestion between builds, verified via `certutil -hashfile data\processed\chunks.jsonl MD5` before and after (identical hash confirms the metadata header was the only variable). The embedding script reads every chunk in file order with no filtering or randomness.
 

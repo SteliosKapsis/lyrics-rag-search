@@ -39,7 +39,6 @@ title,artist,genius_id,reasons
 
 ## Dependencies
 
-- `rapidfuzz>=3.0.0` — fuzzy string matching for artist/title mismatch detection
 - `langdetect>=1.0.9` — language detection to filter non-English lyrics
 
 ## Cleaning Steps (in order)
@@ -99,15 +98,9 @@ Language detection preprocessing:
 
 **Rationale for excluding non-English:** The embedding model (`all-MiniLM-L6-v2`) is primarily trained on English text. Non-English lyrics produce lower-quality embeddings and would degrade retrieval accuracy. Billboard data is overwhelmingly English, so this is a defensive filter.
 
-### Artist/title mismatch
-
-`validate_entry()` supports comparing the Genius-returned artist/title against an `original_artist`/`original_title` (fuzzy score < 60 via `rapidfuzz.fuzz.token_sort_ratio`), flagging `artist_mismatch`/`title_mismatch` when they don't closely match.
-
-**Note:** This check is currently dead code. `main()` calls `validate_entry(entry)` without passing `original_title`/`original_artist`, and both checks are gated on those parameters being truthy (`if original_artist and entry.get("artist"): ...`) — since they default to `None` and are never supplied, the checks never run. `artist_mismatch`/`title_mismatch` reasons can never actually appear in `validation_report.csv` as the pipeline is currently invoked. A future improvement would be to thread the original CSV values through to `validate_entry()` so this logic is reachable.
-
 ## Post-Cleaning Data Quality Pass (`scripts/`)
 
-Two one-off scripts, run once against `data/raw/cleaned_lyrics.json` after Phase 1.5 and before Phase 2 (chunking), added after auditing the corpus and finding two issues this dead-code artist/title mismatch check would likely have caught, had it been reachable:
+`validate_entry()` originally had an `artist_mismatch`/`title_mismatch` check (fuzzy match against the original CSV title/artist via `rapidfuzz.fuzz.token_sort_ratio`), but it was dead code — `main()` never threaded the original CSV values through to the call, so the check could never fire. It has since been removed rather than wired up, in favor of the two targeted scripts below, run once against `data/raw/cleaned_lyrics.json` after Phase 1.5 and before Phase 2 (chunking), added after auditing the corpus and finding two issues the dead check would likely have caught, had it been reachable:
 
 ### `scripts/dedupe_cleaned_lyrics.py`
 

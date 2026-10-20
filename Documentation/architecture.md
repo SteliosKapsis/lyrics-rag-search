@@ -64,8 +64,6 @@ Removes Genius scraping artifacts and validates each entry.
 - `short_lyrics`: lyrics under 100 characters after cleaning
 - `non_english`: detected language is not English (these are **excluded entirely**)
 
-`validate_entry()` also supports `artist_mismatch`/`title_mismatch` flags (fuzzy match against the original CSV title/artist below 60%, via token sort ratio), but this path is currently dead code: `main()` calls `validate_entry(entry)` without the `original_title`/`original_artist` arguments, and those checks are gated on the arguments being truthy. Since the original CSV input isn't threaded through to the call, the checks never run and these flags can never appear in output (the code even has a comment acknowledging this).
-
 Language detection uses `langdetect` after stripping section headers (always English) and very short lines (ad-libs).
 
 **Output**: `data/raw/cleaned_lyrics.json` + `data/failed/validation_report.csv`
@@ -382,7 +380,7 @@ The following values were set as defaults after Phase 6 evaluation identified th
 
 | Parameter | Default | Rationale |
 |---|---|---|
-| `embedding_model` | `all-MiniLM-L6-v2` | Default in `QueryPipeline` and the CLI; `text-embedding-3-small` is selected automatically in the Streamlit UI when its index exists, and showed the best MRR (0.836) in evaluation, virtually tied with MiniLM (0.835) |
+| `embedding_model` | `all-MiniLM-L6-v2` | Default in `QueryPipeline` and the CLI; `text-embedding-3-small` is selected automatically in the Streamlit UI when its index exists. At the deployed defaults (top_k=20, hybrid + re-ranker, 5x fetch multiplier), MiniLM and `text-embedding-3-small` are tied at the highest MRR (0.884), with `bge-small-en-v1.5` close behind (0.879) — see `Documentation/phase_6_evaluation.md` |
 | `top_k` | 20 | Re-ranker benefit scales with k; 20 gives 88% Hit Rate |
 | `use_hybrid` | True | Helps at 8x fetch multiplier; negligible cost |
 | `use_reranker` | True | Single largest quality gain across all configurations |
