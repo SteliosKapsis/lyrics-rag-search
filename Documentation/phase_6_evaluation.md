@@ -176,6 +176,17 @@ Goes beyond retrieval metrics to assess the full RAG pipeline (retrieval + gener
 
 **Why two judges:** The Anthropic judge (Claude Sonnet) is a different model from the pipeline's generation model (Claude Haiku, `claude-haiku-4-5-20251001`), so there's no shared-model self-evaluation risk to begin with. Running a second judge from another vendor (GPT-4o-mini) still adds value: agreement between Claude Sonnet and GPT-4o-mini strengthens result credibility, while disagreement surfaces metrics where evaluation is more subjective or vendor-dependent.
 
+**Results (verified against `notebooks/checkpoints/judge_anthropic.pkl` and `judge_openai.pkl`, mean over the 10 queries):**
+
+| Metric | Claude Sonnet | GPT-4o-mini | Delta |
+|---|---|---|---|
+| Faithfulness | 0.986 | 0.805 | +0.181 |
+| Answer Relevancy | 0.945 | 0.911 | +0.033 |
+| Context Precision | 0.814 | 0.841 | -0.027 |
+| Context Recall | 0.933 | 0.466 | +0.468 |
+
+The two judges agree closely on three of the four metrics (Answer Relevancy and Context Precision within 0.03; Faithfulness differs by 0.18 but both score above 0.80). Context Recall is the exception: a 0.468 gap between judges on the same ten queries, far larger than any other metric's disagreement. This is evidence the metric itself is more subjective or vendor-dependent than the other three, not evidence about which judge is "right" — treat any single Context Recall value as judge-dependent rather than an objective score.
+
 **Why this matters for the thesis:** Retrieval metrics (Precision@k, MRR) only tell you whether the right chunks were found. LLM-as-judge metrics tell you whether the final answer is faithful, relevant, and well-grounded — completing the evaluation picture from retrieval quality through to generation quality.
 
 ## Pipeline Parameters
@@ -256,9 +267,11 @@ Full combinatorial sweep across all tunable parameters and re-ranker models. Pre
 | Re-ranker model | L-6-v2, L-12-v2, bge-reranker-base | 3 |
 | **Re-ranker runs** | | **96** |
 | No-reranker runs | Baseline, Hybrid × 4 top_k values | **8** |
-| **Total runs** | | **104** |
+| **Runs per embedding model** | | **104** |
+| Embedding model | all-MiniLM-L6-v2, bge-small-en-v1.5, text-embedding-3-small | 3 |
+| **Total runs** | | **312** |
 
-Non-reranker configs (Baseline, Hybrid) are swept over top_k only since fetch_k_multiplier and reranker model have no effect without a re-ranker.
+Non-reranker configs (Baseline, Hybrid) are swept over top_k only since fetch_k_multiplier and reranker model have no effect without a re-ranker. The embedding-model dimension was added after this experiment's initial 104-run design (single model); `notebooks/checkpoints/combined_results.pkl` confirms 104 rows for each of the three models, 312 total.
 
 **Visualizations produced:**
 | Plot | File | Description |
@@ -271,6 +284,19 @@ Non-reranker configs (Baseline, Hybrid) are swept over top_k only since fetch_k_
 - Top 10 configurations by MRR (overall)
 - Best configuration per re-ranker model
 - Best configuration per technique stack
+
+**Global best (verified against `combined_results.pkl`):** `text-embedding-3-small` + Hybrid + Re-ranker, default re-ranker model (`ms-marco-MiniLM-L-6-v2`), `top_k=20`, `fetch_k_multiplier=8x` — **MRR 0.897, Hit Rate 97.3%**, the highest result in the entire 312-run sweep. This exceeds Experiment 4's own ceiling (0.858 MRR / 90.7% HR, Hybrid+RR at 8x) because Experiment 4 holds `top_k` fixed at 5 and only sweeps the fetch multiplier; this experiment sweeps `top_k` and the multiplier together, and Experiment 2 already showed `top_k=20` alone adds substantial MRR on its own.
+
+**Re-ranker model comparison (mean across all 96 re-ranker runs per model, per embedding model, 288 rows total):**
+
+| Re-ranker model | Mean MRR | Mean Hit Rate | Mean time |
+|---|---|---|---|
+| ms-marco-MiniLM-L-6-v2 (default) | 0.779 | 0.825 | 168.2s |
+| ms-marco-MiniLM-L-12-v2 | 0.780 | 0.826 | 291.7s |
+| bge-reranker-base | 0.728 | 0.807 | 868.3s |
+| No re-ranker (24 rows) | 0.655 | 0.770 | 40.6s |
+
+The default, lightest re-ranker ties the deeper L-12-v2 model on quality while running in under 60% of the time, and clearly beats the larger bge-reranker-base despite the latter costing roughly 5x the runtime.
 
 ### Experiment 9: Per-Query-Type Breakdown (Section 3.1.1)
 

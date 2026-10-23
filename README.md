@@ -2,11 +2,13 @@
 
 A complete Retrieval-Augmented Generation (RAG) system for finding songs from natural-language queries — whether an exact lyric fragment, a vague description, or a half-remembered line. Built as a thesis project, the system spans the full ML engineering lifecycle: data collection, cleaning, chunking, embedding, indexing, retrieval, LLM synthesis, evaluation, frontend, and containerized deployment.
 
+Beyond basic retrieval, the pipeline includes production-style safety mechanisms often missing from RAG demos: a model/index identity check that refuses to start on a mismatch, claim-level citation linking back to specific chunks, and a retrieval-gated abstention mechanism so the system says "I don't know" instead of guessing when nothing in the corpus actually matches.
+
 ## Dataset
 
 - **Source**: Billboard Hot 100 (1958–2021), 29,681 unique song-artist pairs
 - **Lyrics**: Collected via Genius API
-- **Final corpus**: 14,997 songs · 3,878 artists · 175,792 chunks
+- **Final corpus**: 14,759 songs · 3,739 artists · 130,336 chunks (after dedup and non-song-content filtering — see `Documentation/phase_1.5_cleaning.md`)
 
 ## Quick Start
 
@@ -111,8 +113,15 @@ RAG system/
 ├── pipeline/                    # Stage 3-5: Core RAG components
 │   ├── chunking.py              # Section-aware lyrics splitting
 │   ├── embedding.py             # Sentence-transformers / OpenAI embedding + FAISS + BM25
-│   ├── query.py                 # Retrieval, hybrid search, HyDE, re-ranking, LLM synthesis
+│   ├── query.py                 # Orchestration: grouping, abstention gate, citation linking
+│   ├── retriever.py             # Dense/sparse/hybrid retrieval mechanics (composed into QueryPipeline)
+│   ├── llm_backend.py           # Anthropic/Ollama API calling (composed into QueryPipeline)
 │   └── reranker.py              # Cross-encoder re-scoring
+│
+├── scripts/                     # One-off data-quality and golden-set tooling
+│   ├── dedupe_cleaned_lyrics.py       # Removes duplicate (title, artist) chart re-entries
+│   ├── filter_non_song_entries.py     # Drops non-song Genius mismatches
+│   └── backfill_chunk_ids.py          # Semi-automated chunk-level ground truth for the eval set
 │
 ├── app/                         # Stage 6: Streamlit web frontend
 │   └── app.py                   # Interactive UI with streaming, RabbitMQ path
@@ -121,7 +130,7 @@ RAG system/
 │   └── worker.py                # RabbitMQ consumer wrapping QueryPipeline
 │
 ├── notebooks/                   # Evaluation and analysis
-│   └── evaluation.ipynb         # 12 experiments, 75-query test set
+│   └── evaluation.ipynb         # 14 experiments, 95-query test set (75 answerable + 20 unanswerable)
 │
 ├── data/
 │   ├── raw/                     # lyrics.json, cleaned_lyrics.json
@@ -170,7 +179,13 @@ Streamlit App (app/app.py)
                      Group by Song
                             │
                             ▼
+              Retrieval-confidence gate ──► below threshold? ──► abstain (no LLM call)
+                            │ sufficient
+                            ▼
                   LLM Synthesis (Claude / Llama 3)
+                            │
+                            ▼
+              Citation verification (chunk_index ↔ cited text)
                             │
                             ▼
                    Structured JSON Response
@@ -178,14 +193,18 @@ Streamlit App (app/app.py)
 
 ## Key Results (from Evaluation)
 
+Technique grid at `top_k=5` (`all-MiniLM-L6-v2`), on the final, corrected corpus — see `Documentation/phase_6_evaluation.md`:
+
 | Configuration | MRR (k=5) | Hit Rate (k=5) | MRR (k=20) | Hit Rate (k=20) |
 |---|---|---|---|---|
-| Baseline (FAISS only) | 0.563 | 0.640 | 0.585 | 0.760 |
-| **Baseline + Re-ranker** | **0.653** | **0.680** | **0.767** | **0.880** |
-| Hybrid + Re-ranker | 0.553 | 0.600 | — | — |
-| HyDE + anything | < 0.460 | — | — | — |
+| Baseline (FAISS only) | 0.603 | 0.693 | 0.620 | 0.827 |
+| + Re-ranker | 0.700 | 0.733 | 0.811 | 0.867 |
+| **+ Hybrid + Re-ranker** | **0.798** | **0.840** | — | — |
+| HyDE + anything | 0.06–0.22 | — | — | — |
 
-**Best overall**: `text-embedding-3-small` + Hybrid + Re-ranker at `top_k=20`, `fetch_k_multiplier=5` → **MRR 0.836, Hit Rate 0.880**
+**Best overall** (312-run combined sweep across embedding models, `top_k`, fetch multiplier, and reranker model): `text-embedding-3-small` + Hybrid + Re-ranker at `top_k=20`, `fetch_k_multiplier=8x` → **MRR 0.897, Hit Rate 97.3%**
+
+Other findings worth knowing before reusing a technique from this repo elsewhere: HyDE consistently *hurts* retrieval here (queries already contain lyric-like text, so the generated "hypothetical document" adds noise instead of bridging a semantic gap), and contextual embeddings (metadata prepended before encoding) help `all-MiniLM-L6-v2` but consistently hurt `bge-small-en-v1.5` — the benefit is model-dependent, not universal. A RAG-vs-pure-LLM comparison also confirmed retrieval isn't redundant here even though the corpus (Billboard lyrics) is public: Claude/GPT-4o-mini without retrieval only name the correct song 13–15% of the time, versus 80–89% with retrieval.
 
 ## Technology Stack
 
